@@ -4,12 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-// A Firebase importok (Ha a firebase.ts a főkönyvtárban van, akkor a '../firebase' a jó útvonal)
 import { db } from '../firebase'; 
 import { ref, set, onValue, get, update } from 'firebase/database';
 import gsap from 'gsap';
 
-// --- TÉMÁK (Kibővített, eltérő táblákkal) ---
+// --- TÉMÁK ---
 const THEMES = {
   luxus: {
     name: "Royal Mahogany",
@@ -47,7 +46,6 @@ const THEMES = {
 };
 
 const HUNGARIAN_LETTERS = "AÁBCDEÉFGHIÍJKLMNOÓÖŐPRSTUÚÜŰVZ";
-// Globális szótár cache
 const WORD_CACHE = new Set(["ALMA", "KÖRTE", "HÁZ", "LÓ", "KÉZ", "VÍZ", "TŰZ", "SZÓ", "JÁTÉK", "ASZTAL"]);
 
 async function checkHungarianWordAPI(word: string) {
@@ -67,7 +65,7 @@ export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   
-  // UI State
+  // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
@@ -81,11 +79,10 @@ export default function WordMasterGame() {
   const [isHost, setIsHost] = useState(false);
   const [roomCodeInput, setRoomCodeInput] = useState('');
   
-  // Config
   const [config, setConfig] = useState({
     theme: 'luxus',
     boardType: 'normal',
-    playerNames: ['Anna', 'Béla'] // Alapértelmezett, a Firebase felülírja
+    playerNames: ['Anna', 'Béla']
   });
 
   const showToast = (msg: string, isError: boolean) => {
@@ -93,7 +90,15 @@ export default function WordMasterGame() {
     setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
   };
 
-  // --- JÁTÉK LOGIKA START (MULTIPLAYER) ---
+  // Átadjuk a 3D motornak az infót, hogy a mi körünk van-e éppen
+  useEffect(() => {
+    if (gameRef.current && config.playerNames.length > 0) {
+        const activePlayerName = config.playerNames[currentPlayer];
+        gameRef.current.state.isMyTurn = (activePlayerName === playerName);
+    }
+  }, [currentPlayer, playerName, config.playerNames]);
+
+  // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
     
@@ -104,6 +109,7 @@ export default function WordMasterGame() {
       status: 'lobby',
       config: config,
       players: [{ name: playerName, score: 0 }],
+      currentTurn: 0,
       hostName: playerName
     });
 
@@ -141,14 +147,17 @@ export default function WordMasterGame() {
     onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
-        const names = (data.players || []).map((p: any) => p.name);
+        const playersData = data.players || [];
+        const names = playersData.map((p: any) => p.name);
+        const syncedScores = playersData.map((p: any) => p.score || 0);
+
         setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+        setScores(syncedScores);
+        setCurrentPlayer(data.currentTurn || 0);
         
         if (data.status === 'playing') {
            setGameState(prev => {
               if (prev !== 'playing') {
-                  setScores(new Array(names.length).fill(0));
-                  setCurrentPlayer(0);
                   setTimeout(() => {
                       if(gameRef.current) {
                           gameRef.current.updateConfig({ ...data.config, playerNames: names });
@@ -174,7 +183,7 @@ export default function WordMasterGame() {
     if(gameRef.current) gameRef.current.transitionToMenuView();
   };
 
-  // --- 3D GAME ENGINE (Változatlanul hagyva) ---
+  // --- 3D GAME ENGINE ---
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
 
@@ -189,7 +198,8 @@ export default function WordMasterGame() {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
         placedThisTurn: [] as any[],
-        turnCount: 0
+        turnCount: 0,
+        isMyTurn: false // Itt tároljuk, hogy hozzáérhet-e a táblához
       };
 
       constructor(container: HTMLElement) {
@@ -461,6 +471,8 @@ export default function WordMasterGame() {
       }
 
       onDown = (e: MouseEvent) => {
+        if (!this.state.isMyTurn) return; // HA NEM A MI KÖRÜNK VAN, LETILTJUK A KATTINTÁST!
+
         const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
         this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
         const hits = this.raycaster.intersectObjects(this.scene.children, true);
@@ -488,7 +500,7 @@ export default function WordMasterGame() {
       }
 
       onMove = (e: MouseEvent) => {
-        if(!this.dragging) return;
+        if(!this.dragging || !this.state.isMyTurn) return;
         const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
         this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
         const target = new THREE.Vector3();
@@ -497,7 +509,7 @@ export default function WordMasterGame() {
       }
 
       onUp = () => {
-        if(!this.dragging) return;
+        if(!this.dragging || !this.state.isMyTurn) return;
         const gx = Math.round(this.dragging.position.x/1.05); const gz = Math.round(this.dragging.position.z/1.05);
         if(Math.abs(gx)<=7 && Math.abs(gz)<=7) {
             this.placeTileToGrid(this.dragging, gz+7, gx+7);
@@ -611,7 +623,7 @@ export default function WordMasterGame() {
     return () => gameInstance.dispose();
   }, []);
 
-  // --- VALIDATION HANDLER ---
+  // --- VALIDATION & TURN HANDLER ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
@@ -646,17 +658,25 @@ export default function WordMasterGame() {
     }
   };
 
-  const completeTurn = (word: string, placed: any[]) => {
+  const completeTurn = async (word: string, placed: any[]) => {
     const points = word.length * 10; 
     gameRef.current.finalizeTurn(placed, points);
     
     showToast(`✓ ${word} (+${points})`, false);
-    setScores(prev => { 
-        const next = [...prev]; 
-        next[currentPlayer] += points; 
-        return next; 
+
+    // Szinkronizáljuk a Firebase-t a következő körrel
+    const nextPlayerIndex = (currentPlayer + 1) % config.playerNames.length;
+    
+    const updatedPlayers = config.playerNames.map((name, i) => ({
+        name: name,
+        score: i === currentPlayer ? (scores[i] || 0) + points : (scores[i] || 0)
+    }));
+
+    await update(ref(db, `rooms/${roomId}`), {
+        currentTurn: nextPlayerIndex,
+        players: updatedPlayers
     });
-    setCurrentPlayer(prev => (prev + 1) % scores.length);
+
     setTimeout(() => { gameRef.current.fillRack(); setValidating(false); }, 800);
   };
 
@@ -711,7 +731,6 @@ export default function WordMasterGame() {
       
       <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
 
-      {/* POPUP ABLAK */}
       {popupData && (
         <div className="popup-overlay">
             <div className="popup-box">
@@ -814,12 +833,20 @@ export default function WordMasterGame() {
                 </div>
 
                 <div className="bottom-bar">
-                    <button className="action-btn btn-glass" onClick={backToMenu}>Menü</button>
-                    <button className="action-btn btn-glass" onClick={()=>gameRef.current?.recall()}>Vissza</button>
-                    <button className="action-btn btn-glass" onClick={()=>gameRef.current?.shuffle()}>Keverés</button>
-                    <button className="action-btn btn-primary" onClick={handleValidate} disabled={validating}>
-                        {validating ? '...' : 'LERAKÁS'}
-                    </button>
+                    {config.playerNames[currentPlayer] !== playerName ? (
+                        <div style={{ padding: '15px 30px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '2px solid rgba(255,255,255,0.2)' }}>
+                            ⏳ Várakozás {config.playerNames[currentPlayer]} lépésére...
+                        </div>
+                    ) : (
+                        <>
+                            <button className="action-btn btn-glass" onClick={backToMenu}>Menü</button>
+                            <button className="action-btn btn-glass" onClick={()=>gameRef.current?.recall()}>Vissza</button>
+                            <button className="action-btn btn-glass" onClick={()=>gameRef.current?.shuffle()}>Keverés</button>
+                            <button className="action-btn btn-primary" onClick={handleValidate} disabled={validating}>
+                                {validating ? '...' : 'LERAKÁS'}
+                            </button>
+                        </>
+                    )}
                 </div>
             </>
         )}
