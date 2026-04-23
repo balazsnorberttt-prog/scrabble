@@ -152,22 +152,22 @@ export default function WordMasterGame() {
         const syncedScores = playersData.map((p: any) => p.score || 0);
 
         setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-        setScores(syncedScores);
-        setCurrentPlayer(data.currentTurn || 0);
+        setScores(syncedScores);[cite: 1]
+        setCurrentPlayer(data.currentTurn || 0);[cite: 1]
         
-        if (data.status === 'playing') {
-           setGameState(prev => {
-              if (prev !== 'playing') {
-                  setTimeout(() => {
-                      if(gameRef.current) {
-                          gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                          gameRef.current.transitionToGameView();
-                      }
-                  }, 100);
-                  return 'playing';
-              }
-              return prev;
-           });
+        // --- ÚJ: TÁBLA FRISSÍTÉSE A TÖBBIEKNÉL ---
+        if (data.boardData && gameRef.current) {
+            gameRef.current.syncBoardFromFirebase(data.boardData);[cite: 1]
+        }
+
+        if (data.status === 'playing' && gameState !== 'playing') {
+            setGameState('playing');
+            setTimeout(() => {
+                if(gameRef.current) {
+                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                    gameRef.current.transitionToGameView();
+                }
+            }, 500);
         }
       }
     });
@@ -659,23 +659,28 @@ export default function WordMasterGame() {
   };
 
   const completeTurn = async (word: string, placed: any[]) => {
-    const points = word.length * 10; 
-    gameRef.current.finalizeTurn(placed, points);
+    const pts = word.length * 10;
+    gameRef.current.finalizeTurn();[cite: 1]
     
-    showToast(`✓ ${word} (+${points})`, false);
-
-    // Szinkronizáljuk a Firebase-t a következő körrel
-    const nextPlayerIndex = (currentPlayer + 1) % config.playerNames.length;
-    
-    const updatedPlayers = config.playerNames.map((name, i) => ({
-        name: name,
-        score: i === currentPlayer ? (scores[i] || 0) + points : (scores[i] || 0)
+    const nextTurn = (currentPlayer + 1) % config.playerNames.length;
+    const newPlayers = config.playerNames.map((n, i) => ({ 
+        name: n, 
+        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    await update(ref(db, `rooms/${roomId}`), {
-        currentTurn: nextPlayerIndex,
-        players: updatedPlayers
+    // --- ÚJ: TÁBLA ÁLLAPOTÁNAK MENTÉSE ---
+    const boardSnapshot = gameRef.current.getBoardSnapshot();[cite: 1]
+
+    await update(ref(db, `rooms/${roomId}`), { 
+        currentTurn: nextTurn, 
+        players: newPlayers,
+        boardData: boardSnapshot // Ez küldi el a betűket a felhőbe
     });
+
+    showToast(`Kész! +${pts}`, false);
+    gameRef.current.fillRack();[cite: 1]
+    setValidating(false);
+  };
 
     setTimeout(() => { gameRef.current.fillRack(); setValidating(false); }, 800);
   };
