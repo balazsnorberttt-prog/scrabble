@@ -1,5 +1,6 @@
 'use client';
-
+import { db } from './firebase'; // Ez a te fájlod!
+import { ref, set, onValue, get, update } from 'firebase/database'; // Ezek a Firebase parancsai
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -67,25 +68,21 @@ export default function WordMasterGame() {
   const gameRef = useRef(null);
   
   // UI State
-  const [gameState, setGameState] = useState('menu');
-  const [scores, setScores] = useState([]);
-  const [currentPlayer, setCurrentPlayer] = useState(0);
-  const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
-  const [validating, setValidating] = useState(false);
-  const [popupData, setPopupData] = useState(null); // { word: "XYZ", onAccept: func, onReject: func }
-  
-  // Config
-  const [config, setConfig] = useState({
-    theme: 'luxus',
-    boardType: 'normal',
-    playerNames: ['Anna', 'Béla']
-  });
+const [gameState, setGameState] = useState('menu');
+const [scores, setScores] = useState([]);
+const [currentPlayer, setCurrentPlayer] = useState(0);
+const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
+const [validating, setValidating] = useState(false);
+const [popupData, setPopupData] = useState(null);
 
-  const showToast = (msg, isError) => {
-    setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
-    setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
-  };
+// --- ÚJ MULTIPLAYER VÁLTOZÓK IDE JÖNNEK ---
+const [roomId, setRoomId] = useState(''); // Ez tárolja az ABCD kódot
+const [playerName, setPlayerName] = useState(''); // A te saját neved
+const [isHost, setIsHost] = useState(false); // Te vagy a szoba főnöke?
+const [roomCodeInput, setRoomCodeInput] = useState(''); // Ide írod be, ha csatlakozol
 
+// Config
+const [config, setConfig] = useState({
   // --- JÁTÉK LOGIKA START ---
   const startGame = () => {
     setScores(new Array(config.playerNames.length).fill(0));
