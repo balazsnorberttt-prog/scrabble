@@ -85,9 +85,6 @@ export default function WordMasterGame() {
     playerNames: [] as string[]
   });
 
-  const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
-  const [globalTempData, setGlobalTempData] = useState<any[]>([]);
-
   // MOBIL ZOOM LETILTÁSA
   useEffect(() => {
     const meta = document.createElement('meta');
@@ -110,18 +107,6 @@ export default function WordMasterGame() {
         gameRef.current.state.isMyTurn = (activePlayerName === playerName);
     }
   }, [currentPlayer, playerName, config.playerNames]);
-
-  useEffect(() => {
-    if (gameRef.current && gameState === 'playing') {
-        gameRef.current.syncBoardFromFirebase(globalBoardData);
-    }
-  }, [globalBoardData, gameState]);
-
-  useEffect(() => {
-    if (gameRef.current && gameState === 'playing') {
-        gameRef.current.syncOpponentPlacements(globalTempData);
-    }
-  }, [globalTempData, gameState]);
 
   // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
@@ -169,38 +154,46 @@ export default function WordMasterGame() {
     }
   };
 
+  // --- A JAVÍTOTT, KÖZVETLEN SZINKRONIZÁLÓ ---
   const listenToRoom = (id: string) => {
     const roomRef = ref(db, `rooms/${id}`);
     onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        const playersData = data.players || [];
-        const names = playersData.map((p: any) => p.name);
-        const syncedScores = playersData.map((p: any) => p.score || 0);
+      if (!data) return;
 
-        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-        setScores(syncedScores);
-        setCurrentPlayer(data.currentTurn || 0);
+      const playersData = data.players || [];
+      const names = playersData.map((p: any) => p.name);
+      const syncedScores = playersData.map((p: any) => p.score || 0);
 
-        if (data.boardData) {
-            const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-            setGlobalBoardData(parsedBoard);
-        }
+      setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+      setScores(syncedScores);
+      setCurrentPlayer(data.currentTurn || 0);
 
-        if (data.tempPlacements) {
-            const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
-            setGlobalTempData(parsedTemp);
-        }
-        
-        if (data.status === 'playing' && gameState !== 'playing') {
-            setGameState('playing');
-            setTimeout(() => {
-                if(gameRef.current) {
-                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                    gameRef.current.transitionToGameView();
-                }
-            }, 100);
-        }
+      // KÖZVETLENÜL A 3D MOTORNAK ADJUK ÁT AZ ADATOT (Nincs több React késés!)
+      if (gameRef.current && data.status === 'playing') {
+          if (data.boardData) {
+              const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+              gameRef.current.syncBoardFromFirebase(parsedBoard);
+          }
+          if (data.tempPlacements) {
+              const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
+              gameRef.current.syncOpponentPlacements(parsedTemp);
+          }
+      }
+      
+      if (data.status === 'playing' && gameState !== 'playing') {
+          setGameState('playing');
+          setTimeout(() => {
+              if(gameRef.current) {
+                  gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                  gameRef.current.transitionToGameView();
+                  // Biztonsági újra-szinkronizálás a kamera animáció után
+                  if (data.boardData) {
+                      const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+                      gameRef.current.syncBoardFromFirebase(parsedBoard);
+                  }
+              }
+          }, 100);
       }
     });
   };
@@ -469,11 +462,8 @@ export default function WordMasterGame() {
         }
       }
 
-      // --- TÖKÉLETES POINTER EVENTS MOBILRA ÉS PC-RE ---
       addEvents() {
         const el = this.renderer.domElement;
-        
-        // CSS touch-action none biztosítja, hogy a böngésző ránk hagyja a húzást
         el.style.touchAction = 'none';
 
         const onPointerDown = (e: PointerEvent) => {
@@ -491,12 +481,14 @@ export default function WordMasterGame() {
                 const fixed = this.state.boardGrid.some(r=>r.includes(t)) && !this.state.placedThisTurn.some(p=>p.tile===t);
                 
                 if(!fixed) {
+                    if (e.cancelable) e.preventDefault(); 
+                    
                     if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) {
                         gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
                     }
                     this.dragging = t; 
                     this.selectedTile = t; 
-                    this.controls.enabled = false; // Kikapcsoljuk az asztal forgatását, amíg a betűt húzod!
+                    this.controls.enabled = false; 
                     gsap.to(t.position, {y:3, duration:0.2}); 
                     gsap.to(t.rotation, {x:0, z:0, duration:0.2});
                 }
@@ -504,6 +496,7 @@ export default function WordMasterGame() {
             }
             const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
             if(hitSlot && this.selectedTile) {
+                if (e.cancelable) e.preventDefault();
                 const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
                 this.placeTileToGrid(this.selectedTile, r, c);
                 this.selectedTile = null;
@@ -516,6 +509,7 @@ export default function WordMasterGame() {
 
         const onPointerMove = (e: PointerEvent) => {
             if(!this.dragging || !this.state.isMyTurn) return;
+            if (e.cancelable) e.preventDefault(); 
             
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -540,15 +534,13 @@ export default function WordMasterGame() {
                 this.selectedTile = null;
             }
             this.dragging = null; 
-            this.controls.enabled = true; // Visszakapcsoljuk az asztal forgatását
+            this.controls.enabled = true; 
         };
 
-        // Csak modern pointer eventeket használunk, ezek kiváltják az érintést és egeret is!
         el.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
         window.addEventListener('pointerup', onPointerUp);
-        window.addEventListener('pointercancel', onPointerUp); // Ha valaki lehúzza az ujját a képernyőről
-
+        window.addEventListener('pointercancel', onPointerUp); 
         window.addEventListener('resize', this.onResize);
       }
 
@@ -647,6 +639,7 @@ export default function WordMasterGame() {
         return data;
       }
 
+      // --- BRUTÁLISAN BIZTOS SZINKRONIZÁLÁS ---
       syncBoardFromFirebase(boardData: any[]) {
         const incomingMap = new Map();
         boardData.forEach(item => incomingMap.set(`${item.r}_${item.c}`, item.char));
@@ -723,7 +716,7 @@ export default function WordMasterGame() {
     return () => gameInstance.dispose();
   }, []);
 
-  // --- LERAKÁS ÉS API ---
+  // --- LERAKÁS ÉS API (JAVÍTOTT VÉGLEGESÍTÉSSEL) ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
@@ -760,7 +753,12 @@ export default function WordMasterGame() {
 
   const completeTurn = async (word: string, placed: any[]) => {
     const pts = word.length * 10;
+    
+    // 1. Lefixáljuk a betűket a saját 3D táblánkon
     gameRef.current.finalizeTurn(placed, pts);
+    
+    // 2. Kiolvassuk a TÖKÉLETESEN frissített táblát
+    const boardSnapshot = gameRef.current.getBoardSnapshot();
     
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
     const newPlayers = config.playerNames.map((n, i) => ({ 
@@ -768,16 +766,18 @@ export default function WordMasterGame() {
         score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    const boardSnapshot = gameRef.current.getBoardSnapshot();
-
-    await update(ref(db, `rooms/${roomId}`), { 
-        currentTurn: nextTurn, 
-        players: newPlayers,
-        boardData: JSON.stringify(boardSnapshot),
-        tempPlacements: JSON.stringify([]) 
-    });
-
-    showToast(`Kész! +${pts}`, false);
+    try {
+        // 3. Felküldjük a Firebase-be (Ezt a Laptop azonnal le fogja reagálni!)
+        await update(ref(db, `rooms/${roomId}`), { 
+            currentTurn: nextTurn, 
+            players: newPlayers,
+            boardData: JSON.stringify(boardSnapshot),
+            tempPlacements: JSON.stringify([]) 
+        });
+        showToast(`Kész! +${pts}`, false);
+    } catch(err) {
+        showToast('Hálózati hiba!', true);
+    }
     
     setTimeout(() => { 
         gameRef.current.fillRack(); 
@@ -794,7 +794,7 @@ export default function WordMasterGame() {
             overflow: hidden; 
             font-family: 'Inter', sans-serif; 
             background: #000;
-            touch-action: none; /* A BÖNGÉSZŐ NEM FOG GÖRGETNI HÚZÁSNÁL */
+            touch-action: none; 
             -webkit-user-select: none;
             user-select: none;
         }
