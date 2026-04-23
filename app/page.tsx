@@ -1,12 +1,12 @@
 'use client';
-import { db } from './firebase'; // Ez a te fájlod!
-import { ref, set, onValue, get, update } from 'firebase/database'; // Ezek a Firebase parancsai
+
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { FontLoader } from 'three/examples/jsm/loaders/FontLoader.js';
-import { TextGeometry } from 'three/examples/jsm/geometries/TextGeometry.js';
+// A Firebase importok (Ha a firebase.ts a főkönyvtárban van, akkor a '../firebase' a jó útvonal)
+import { db } from '../firebase'; 
+import { ref, set, onValue, get, update } from 'firebase/database';
 import gsap from 'gsap';
 
 // --- TÉMÁK (Kibővített, eltérő táblákkal) ---
@@ -50,7 +50,7 @@ const HUNGARIAN_LETTERS = "AÁBCDEÉFGHIÍJKLMNOÓÖŐPRSTUÚÜŰVZ";
 // Globális szótár cache
 const WORD_CACHE = new Set(["ALMA", "KÖRTE", "HÁZ", "LÓ", "KÉZ", "VÍZ", "TŰZ", "SZÓ", "JÁTÉK", "ASZTAL"]);
 
-async function checkHungarianWordAPI(word) {
+async function checkHungarianWordAPI(word: string) {
   const cleanWord = word.trim().toUpperCase();
   if (!cleanWord) return false;
   if (WORD_CACHE.has(cleanWord)) return true;
@@ -60,57 +60,142 @@ async function checkHungarianWordAPI(word) {
     const exists = Object.keys(data.query.pages)[0] !== "-1";
     if (exists) WORD_CACHE.add(cleanWord);
     return exists;
-  } catch (error) { return false; } // API hiba esetén most FALSE, hogy feljöjjön az ablak
+  } catch (error) { return false; } 
 }
 
 export default function WordMasterGame() {
-  const containerRef = useRef(null);
-  const gameRef = useRef(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gameRef = useRef<any>(null);
   
   // UI State
   const [gameState, setGameState] = useState('menu');
-  const [scores, setScores] = useState([]);
+  const [scores, setScores] = useState<number[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
   const [validating, setValidating] = useState(false);
-  const [popupData, setPopupData] = useState(null);
+  const [popupData, setPopupData] = useState<any>(null); 
   
-  // --- ÚJ MULTIPLAYER VÁLTOZÓK IDE JÖNNEK ---
-  const [roomId, setRoomId] = useState(''); 
-  const [playerName, setPlayerName] = useState(''); 
-  const [isHost, setIsHost] = useState(false); 
-  const [roomCodeInput, setRoomCodeInput] = useState(''); 
+  // --- MULTIPLAYER ÁLLAPOTOK ---
+  const [roomId, setRoomId] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  const [isHost, setIsHost] = useState(false);
+  const [roomCodeInput, setRoomCodeInput] = useState('');
   
   // Config
   const [config, setConfig] = useState({
     theme: 'luxus',
     boardType: 'normal',
-    playerNames: ['Anna', 'Béla']
+    playerNames: ['Anna', 'Béla'] // Alapértelmezett, a Firebase felülírja
   });
 
-  
-  // --- 3D GAME ENGINE ---
+  const showToast = (msg: string, isError: boolean) => {
+    setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
+    setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
+  };
+
+  // --- JÁTÉK LOGIKA START (MULTIPLAYER) ---
+  const createRoom = async () => {
+    if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
+    
+    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const roomRef = ref(db, `rooms/${newRoomId}`);
+    
+    await set(roomRef, {
+      status: 'lobby',
+      config: config,
+      players: [{ name: playerName, score: 0 }],
+      hostName: playerName
+    });
+
+    setRoomId(newRoomId);
+    setIsHost(true);
+    listenToRoom(newRoomId);
+  };
+
+  const joinRoom = async () => {
+    if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
+    if (roomCodeInput.length !== 4) return showToast('A kód 4 karakter hosszú!', true);
+
+    const roomRef = ref(db, `rooms/${roomCodeInput}`);
+    const snapshot = await get(roomRef);
+
+    if (snapshot.exists()) {
+      const roomData = snapshot.val();
+      if (roomData.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
+      
+      const currentPlayers = roomData.players || [];
+      if (currentPlayers.length >= 4) return showToast('A szoba megtelt!', true);
+
+      const updatedPlayers = [...currentPlayers, { name: playerName, score: 0 }];
+      await update(roomRef, { players: updatedPlayers });
+
+      setRoomId(roomCodeInput);
+      listenToRoom(roomCodeInput);
+    } else {
+      showToast('Nem létezik ilyen szoba!', true);
+    }
+  };
+
+  const listenToRoom = (id: string) => {
+    const roomRef = ref(db, `rooms/${id}`);
+    onValue(roomRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const names = (data.players || []).map((p: any) => p.name);
+        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+        
+        if (data.status === 'playing') {
+           setGameState(prev => {
+              if (prev !== 'playing') {
+                  setScores(new Array(names.length).fill(0));
+                  setCurrentPlayer(0);
+                  setTimeout(() => {
+                      if(gameRef.current) {
+                          gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                          gameRef.current.transitionToGameView();
+                      }
+                  }, 100);
+                  return 'playing';
+              }
+              return prev;
+           });
+        }
+      }
+    });
+  };
+
+  const startMultiplayerGame = async () => {
+    if (!roomId) return;
+    await update(ref(db, `rooms/${roomId}`), { status: 'playing' });
+  };
+
+  const backToMenu = () => {
+    setGameState('menu');
+    if(gameRef.current) gameRef.current.transitionToMenuView();
+  };
+
+  // --- 3D GAME ENGINE (Változatlanul hagyva) ---
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
 
     class Game {
-      scene; camera; renderer; controls; raycaster; mouse; dragPlane;
-      dragging = null; selectedTile = null; textureCache = {};
-      woodTexture = null; tableTexture = null;
-      activeTheme = THEMES['luxus'];
+      scene: any; camera: any; renderer: any; controls: any; raycaster: any; mouse: any; dragPlane: any;
+      dragging: any = null; selectedTile: any = null; textureCache: any = {};
+      woodTexture: any = null; tableTexture: any = null;
+      activeTheme: any = THEMES['luxus'];
       specialMap = new Map();
       
       state = {
-        rack: [],
+        rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
-        placedThisTurn: [],
+        placedThisTurn: [] as any[],
         turnCount: 0
       };
 
-      constructor(container) {
+      constructor(container: HTMLElement) {
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 100);
-        this.camera.position.set(25, 15, 25); // Menu view
+        this.camera.position.set(25, 15, 25); 
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -128,7 +213,6 @@ export default function WordMasterGame() {
         this.controls.autoRotate = true;
         this.controls.maxPolarAngle = Math.PI / 2.1;
 
-        // Init defaults
         this.updateThemeColors();
         this.loadTextures();
         this.initLights();
@@ -140,14 +224,13 @@ export default function WordMasterGame() {
         this.animate();
       }
 
-      // Kívülről hívható konfig frissítés
-      updateConfig(newConfig) {
-          this.activeTheme = THEMES[newConfig.theme];
+      updateConfig(newConfig: any) {
+          this.activeTheme = (THEMES as any)[newConfig.theme] || THEMES['luxus'];
           this.updateThemeColors();
           this.loadTextures();
-          this.createTable(); // Új asztal
+          this.createTable(); 
           this.generateBoardLayout(newConfig.boardType);
-          this.initBoard(); // Új tábla
+          this.initBoard(); 
       }
 
       updateThemeColors() {
@@ -188,9 +271,8 @@ export default function WordMasterGame() {
       }
 
       loadTextures() {
-        // Asztal
         const cvs = document.createElement('canvas'); cvs.width = 1024; cvs.height = 1024;
-        const ctx = cvs.getContext('2d');
+        const ctx = cvs.getContext('2d')!;
         const grd = ctx.createRadialGradient(512, 512, 100, 512, 512, 900);
         grd.addColorStop(0, this.activeTheme.tableParams.color1); 
         grd.addColorStop(1, this.activeTheme.tableParams.color2); 
@@ -199,15 +281,13 @@ export default function WordMasterGame() {
         for(let i=0;i<1000;i++) ctx.fillRect(Math.random()*1024, Math.random()*1024, 2, 2);
         this.tableTexture = new THREE.CanvasTexture(cvs);
         
-        // Keret
         const cvsW = document.createElement('canvas'); cvsW.width = 512; cvsW.height = 512;
-        const ctxW = cvsW.getContext('2d');
+        const ctxW = cvsW.getContext('2d')!;
         ctxW.fillStyle = this.activeTheme.woodColor; ctxW.fillRect(0,0,512,512);
         this.woodTexture = new THREE.CanvasTexture(cvsW);
       }
 
       createTable() {
-        // Előző törlése
         const oldTable = this.scene.getObjectByName("tableMesh");
         if(oldTable) this.scene.remove(oldTable);
 
@@ -219,12 +299,12 @@ export default function WordMasterGame() {
         this.scene.add(mesh);
       }
 
-      generateBoardLayout(type) {
+      generateBoardLayout(type: string) {
         this.specialMap.clear();
         this.specialMap.set('7_7', { lines:['★', 'START'], color: this.activeTheme.special.start });
 
         if (type === 'normal') {
-            const setSym = (arr, val) => arr.forEach(p => this.specialMap.set(`${p[0]}_${p[1]}`, val));
+            const setSym = (arr: any[], val: any) => arr.forEach(p => this.specialMap.set(`${p[0]}_${p[1]}`, val));
             const tw = [[0,0], [0,7], [0,14], [7,0], [7,14], [14,0], [14,7], [14,14]];
             const dw = [[1,1], [2,2], [3,3], [4,4], [1,13], [2,12], [3,11], [4,10], [13,1], [12,2], [11,3], [10,4], [13,13], [12,12], [11,11], [10,10]];
             const tl = [[1,5], [1,9], [5,1], [5,5], [5,9], [5,13], [9,1], [9,5], [9,9], [9,13], [13,5], [13,9]];
@@ -235,7 +315,6 @@ export default function WordMasterGame() {
             setSym(tl, { lines:['TRIPLA', 'BETŰ'], color: this.activeTheme.special.tl });
             setSym(dl, { lines:['DUPLA', 'BETŰ'], color: this.activeTheme.special.dl });
         } else {
-            // Random layout generálás
             for(let r=0; r<15; r++) {
                 for(let c=0; c<15; c++) {
                     if (r===7 && c===7) continue;
@@ -249,18 +328,18 @@ export default function WordMasterGame() {
         }
       }
 
-      getCellInfo(r, c) {
+      getCellInfo(r: number, c: number) {
         const key = `${r}_${c}`;
         if (this.specialMap.has(key)) return this.specialMap.get(key);
         return { lines:[], color: this.activeTheme.boardField };
       }
 
-      getTexture(lines, color, isTile) {
+      getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
         if (this.textureCache[id]) return this.textureCache[id];
 
         const size = 512; const cvs = document.createElement('canvas'); cvs.width = size; cvs.height = size;
-        const ctx = cvs.getContext('2d');
+        const ctx = cvs.getContext('2d')!;
 
         if (isTile) {
             const grd = ctx.createLinearGradient(0,0,size,size);
@@ -269,7 +348,7 @@ export default function WordMasterGame() {
             else { grd.addColorStop(0, '#fceabb'); grd.addColorStop(1, '#f8b500'); }
             ctx.fillStyle = grd; ctx.fillRect(0,0,size,size);
         } else {
-            const hex = '#' + new THREE.Color(color).getHexString();
+            const hex = '#' + new THREE.Color(color!).getHexString();
             ctx.fillStyle = hex; ctx.fillRect(0,0,size,size);
             ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.lineWidth = 10; ctx.strokeRect(0,0,size,size);
         }
@@ -290,7 +369,7 @@ export default function WordMasterGame() {
             ctx.fillText(lines[0], size/2, size/2 - 25);
             ctx.font = 'bold 80px "Segoe UI", sans-serif'; ctx.fillText("1", size - 70, size - 70);
         } else if (lines.length > 0) {
-            ctx.fillStyle = textColor; ctx.strokeStyle = strokeColor; ctx.lineWidth = 8;
+            ctx.fillStyle = textColor; ctx.strokeStyle = strokeColor!; ctx.lineWidth = 8;
             let fontSize = 70;
             const longest = lines.reduce((a, b) => a.length > b.length ? a : b, "");
             if (longest.length > 8) fontSize = 55;
@@ -335,7 +414,7 @@ export default function WordMasterGame() {
         this.scene.add(group);
       }
 
-      createTileMesh(char) {
+      createTileMesh(char: string) {
         const geo = new RoundedBoxGeometry(0.95, 0.25, 0.95, 4, 0.08);
         const tex = this.getTexture([char], null, true);
         const matBody = new THREE.MeshPhysicalMaterial({ color: 0xccaa88, roughness: 0.4 });
@@ -381,12 +460,12 @@ export default function WordMasterGame() {
         window.addEventListener('resize', this.onResize);
       }
 
-      onDown = (e) => {
+      onDown = (e: MouseEvent) => {
         const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
         this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
         const hits = this.raycaster.intersectObjects(this.scene.children, true);
         
-        const hitTile = hits.find(i=>i.object.userData.isTile);
+        const hitTile = hits.find((i:any)=>i.object.userData.isTile);
         if(hitTile) {
             const t = hitTile.object;
             const fixed = this.state.boardGrid.some(r=>r.includes(t)) && !this.state.placedThisTurn.some(p=>p.tile===t);
@@ -397,7 +476,7 @@ export default function WordMasterGame() {
             }
             return;
         }
-        const hitSlot = hits.find(i=>i.object.userData.isSlot);
+        const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
         if(hitSlot && this.selectedTile) {
             const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
             this.placeTileToGrid(this.selectedTile, r, c);
@@ -408,7 +487,7 @@ export default function WordMasterGame() {
         }
       }
 
-      onMove = (e) => {
+      onMove = (e: MouseEvent) => {
         if(!this.dragging) return;
         const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
         this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
@@ -427,7 +506,7 @@ export default function WordMasterGame() {
         this.dragging=null; this.controls.enabled=true;
       }
 
-      placeTileToGrid(tile, r, c) {
+      placeTileToGrid(tile: any, r: number, c: number) {
         const fixed = this.state.boardGrid[r][c]!==null;
         const current = this.state.placedThisTurn.some(p=>p.r===r && p.c===c && p.tile!==tile);
         if(!fixed && !current) {
@@ -439,13 +518,12 @@ export default function WordMasterGame() {
         } else this.returnToRack(tile);
       }
 
-      returnToRack(tile) {
+      returnToRack(tile: any) {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
         tile.userData.isPlaced=false; this.arrangeRack();
       }
 
-      // --- JAVÍTOTT SZÓ ÉRTELMEZÉS (Fentről lefelé mindig!) ---
       async validateTurn() {
         const placed = this.state.placedThisTurn;
         if (placed.length === 0) return { success: false, msg: "Nincs lerakott betű!" };
@@ -461,7 +539,7 @@ export default function WordMasterGame() {
 
         if (isHoriz) {
             const r = placed[0].r;
-            placed.sort((a,b) => a.c - b.c); // Mindig balról jobbra!
+            placed.sort((a,b) => a.c - b.c); 
             let startC = placed[0].c;
             while(startC > 0 && this.state.boardGrid[r][startC - 1] !== null) startC--;
             let endC = placed[placed.length-1].c;
@@ -478,7 +556,7 @@ export default function WordMasterGame() {
             }
         } else { 
             const c = placed[0].c;
-            placed.sort((a,b) => a.r - b.r); // Mindig FENTRŐL LEFELÉ!
+            placed.sort((a,b) => a.r - b.r); 
             let startR = placed[0].r;
             while(startR > 0 && this.state.boardGrid[startR - 1][c] !== null) startR--;
             let endR = placed[placed.length-1].r;
@@ -494,13 +572,10 @@ export default function WordMasterGame() {
                 }
             }
         }
-
-        // Külső hívással kezeljük az eredményt
         return { mainWord, placed };
       }
 
-      // Véglegesítés logikája
-      finalizeTurn(placed, points) {
+      finalizeTurn(placed: any[], points: number) {
         placed.forEach(p => {
             this.state.boardGrid[p.r][p.c] = p.tile;
             const glow = new THREE.PointLight(0x00ff00, 2, 3);
@@ -536,33 +611,29 @@ export default function WordMasterGame() {
     return () => gameInstance.dispose();
   }, []);
 
-  // --- VALIDATION HANDLER (Popup logikával) ---
+  // --- VALIDATION HANDLER ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
     
-    // 1. Megkapjuk a szót és a betűket a Game classból
     const check = await gameRef.current.validateTurn();
     
-    if(check.success === false) { // Hiba (pl. lyukas szó)
+    if(check.success === false) { 
         showToast(check.msg, true);
         setValidating(false);
         return;
     }
 
     const { mainWord, placed } = check;
-
-    // 2. API Ellenőrzés
     const exists = await checkHungarianWordAPI(mainWord);
 
     if (exists) {
         completeTurn(mainWord, placed);
     } else {
-        // 3. POPUP MEGJELENÍTÉSE
         setPopupData({
             word: mainWord,
             onAccept: () => {
-                WORD_CACHE.add(mainWord); // Tanulás
+                WORD_CACHE.add(mainWord); 
                 completeTurn(mainWord, placed);
                 setPopupData(null);
             },
@@ -575,8 +646,8 @@ export default function WordMasterGame() {
     }
   };
 
-  const completeTurn = (word, placed) => {
-    const points = word.length * 10; // Egyszerű pontozás
+  const completeTurn = (word: string, placed: any[]) => {
+    const points = word.length * 10; 
     gameRef.current.finalizeTurn(placed, points);
     
     showToast(`✓ ${word} (+${points})`, false);
@@ -595,7 +666,6 @@ export default function WordMasterGame() {
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap');
         .app-container { font-family: 'Inter', sans-serif; position: fixed; inset: 0; pointer-events: none; z-index: 10; }
         
-        /* 3D POPUP */
         .popup-overlay {
             position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
             display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 100;
@@ -662,39 +732,68 @@ export default function WordMasterGame() {
                 <div className="glass-panel">
                     <div className="menu-title">ULTIMATE<br/>WORD MASTER</div>
                     
-                    <div className="input-group">
-                        <label className="input-label">Téma</label>
-                        <div className="option-grid-3">
-                            <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={()=>setConfig({...config, theme:'luxus'})}>Luxus</button>
-                            <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={()=>setConfig({...config, theme:'nordic'})}>Nordic</button>
-                            <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={()=>setConfig({...config, theme:'cyber'})}>Cyber</button>
+                    {!roomId ? (
+                      <>
+                        <div className="input-group">
+                          <label className="input-label">Játékos neved</label>
+                          <input 
+                            className="modern-input" 
+                            placeholder="Pl.: Anna" 
+                            value={playerName} 
+                            onChange={(e) => setPlayerName(e.target.value.toUpperCase())} 
+                          />
                         </div>
-                    </div>
 
-                    <div className="input-group">
-                        <label className="input-label">Pálya</label>
-                        <div className="option-grid">
-                            <button className={`modern-btn ${config.boardType==='normal'?'active':''}`} onClick={()=>setConfig({...config, boardType:'normal'})}>Normál</button>
-                            <button className={`modern-btn ${config.boardType==='random'?'active':''}`} onClick={()=>setConfig({...config, boardType:'random'})}>Bónuszözön</button>
+                        <div style={{display:'flex', gap:'10px', marginTop:'20px'}}>
+                          <button className="play-btn" onClick={createRoom} style={{flex:1}}>ÚJ SZOBA LÉTREHOZÁSA</button>
                         </div>
-                    </div>
 
-                    <div className="input-group">
-                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px'}}>
-                             <label className="input-label" style={{margin:0}}>Játékosok</label>
-                             <div style={{display:'flex', gap:'5px'}}>
-                                <button className="glass-btn" onClick={removePlayer} disabled={config.playerNames.length<=2}>-</button>
-                                <button className="glass-btn" onClick={addPlayer} disabled={config.playerNames.length>=4}>+</button>
-                             </div>
+                        <div style={{display:'flex', gap:'10px', marginTop:'20px', alignItems:'center'}}>
+                          <input 
+                            className="modern-input" 
+                            style={{marginBottom:0}} 
+                            placeholder="KÓD (Pl: ABCD)" 
+                            value={roomCodeInput} 
+                            maxLength={4}
+                            onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())} 
+                          />
+                          <button className="modern-btn active" onClick={joinRoom} style={{height:'100%'}}>CSATLAKOZÁS</button>
                         </div>
-                        {config.playerNames.map((name, i) => (
-                            <input key={i} className="modern-input" value={name} onChange={(e)=>{
-                                const n = [...config.playerNames]; n[i]=e.target.value; setConfig({...config, playerNames:n});
-                            }} />
-                        ))}
-                    </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{textAlign:'center', marginBottom:'20px'}}>
+                          <p style={{opacity:0.7, margin:0}}>Szoba kódja:</p>
+                          <h2 style={{fontSize:'32px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
+                        </div>
 
-                    <button className="play-btn" onClick={startGame}>JÁTÉK INDÍTÁSA ▶</button>
+                        {isHost && (
+                          <div className="input-group">
+                              <label className="input-label">Téma (Host beállítás)</label>
+                              <div className="option-grid-3">
+                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'luxus'})}>Luxus</button>
+                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'nordic'})}>Nordic</button>
+                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'cyber'})}>Cyber</button>
+                              </div>
+                          </div>
+                        )}
+
+                        <div className="input-group">
+                            <label className="input-label">Játékosok a szobában ({config.playerNames.length}/4)</label>
+                            <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
+                              {config.playerNames.map((name, i) => (
+                                  <div key={i} className="modern-input" style={{textAlign:'center', backgroundColor: 'rgba(234, 179, 8, 0.2)', borderColor: '#eab308'}}>{name}</div>
+                              ))}
+                            </div>
+                        </div>
+
+                        {isHost ? (
+                          <button className="play-btn" onClick={startMultiplayerGame}>JÁTÉK INDÍTÁSA ▶</button>
+                        ) : (
+                          <div style={{textAlign:'center', opacity:0.6, padding:'15px'}}>Várakozás a házigazdára...</div>
+                        )}
+                      </>
+                    )}
                 </div>
             </div>
         )}
@@ -705,7 +804,7 @@ export default function WordMasterGame() {
                     {config.playerNames.map((name, i) => (
                         <div key={i} className={`player-pill ${currentPlayer===i?'active':''}`}>
                             <div style={{fontSize:'10px', opacity:0.7, textTransform:'uppercase'}}>{name}</div>
-                            <div style={{fontSize:'24px', fontWeight:'800'}}>{scores[i]}</div>
+                            <div style={{fontSize:'24px', fontWeight:'800'}}>{scores[i] || 0}</div>
                         </div>
                     ))}
                 </div>
