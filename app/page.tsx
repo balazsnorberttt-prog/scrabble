@@ -64,10 +64,8 @@ async function checkHungarianWordAPI(word: string) {
 export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
+  const roomIdRef = useRef<string>('');
   
-  // Globális ref, amiben azonnal frissül a felhőből kapott tábla adat
-  const latestBoardData = useRef<any[]>([]);
-
   // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
@@ -86,6 +84,8 @@ export default function WordMasterGame() {
     boardType: 'normal',
     playerNames: [] as string[]
   });
+
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
   const showToast = (msg: string, isError: boolean) => {
     setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
@@ -112,7 +112,8 @@ export default function WordMasterGame() {
       players: [{ name: playerName, score: 0 }],
       currentTurn: 0,
       hostName: playerName,
-      boardData: JSON.stringify([]) // Biztonságos JSON string
+      boardData: JSON.stringify([]),
+      tempPlacements: JSON.stringify([]) 
     });
 
     setRoomId(newRoomId);
@@ -148,7 +149,7 @@ export default function WordMasterGame() {
     const roomRef = ref(db, `rooms/${id}`);
     onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
+      if (data && gameRef.current) {
         const playersData = data.players || [];
         const names = playersData.map((p: any) => p.name);
         const syncedScores = playersData.map((p: any) => p.score || 0);
@@ -157,23 +158,25 @@ export default function WordMasterGame() {
         setScores(syncedScores);
         setCurrentPlayer(data.currentTurn || 0);
         
-        // TÁBLA FRISSÍTÉSE - Biztonságos JSON parse
-        if (data.boardData) {
-            const parsedData = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-            latestBoardData.current = parsedData;
-            if (gameRef.current) {
-                gameRef.current.syncBoardFromFirebase(parsedData);
-            }
-        }
-
+        // Játék nézet indítása
         if (data.status === 'playing' && gameState !== 'playing') {
             setGameState('playing');
             setTimeout(() => {
-                if(gameRef.current) {
-                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                    gameRef.current.transitionToGameView();
-                }
-            }, 500);
+                gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                gameRef.current.transitionToGameView();
+            }, 300);
+        }
+
+        // TÁBLA FRISSÍTÉSE
+        if (data.boardData) {
+            const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+            gameRef.current.syncBoardFromFirebase(parsedBoard);
+        }
+
+        // VALÓS IDEJŰ SZELLEM-BETŰK FRISSÍTÉSE
+        if (data.tempPlacements) {
+            const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
+            gameRef.current.syncOpponentPlacements(parsedTemp);
         }
       }
     });
@@ -190,6 +193,15 @@ export default function WordMasterGame() {
     if(gameRef.current) gameRef.current.transitionToMenuView();
   };
 
+  // Callback a valós idejű mozgások Firebase-be küldéséhez
+  const onTempPlaceSync = (placements: any[]) => {
+    if (roomIdRef.current) {
+      update(ref(db, `rooms/${roomIdRef.current}`), { 
+          tempPlacements: JSON.stringify(placements) 
+      });
+    }
+  };
+
   // --- 3D GAME ENGINE ---
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
@@ -199,7 +211,11 @@ export default function WordMasterGame() {
       dragging: any = null; selectedTile: any = null; textureCache: any = {};
       woodTexture: any = null; tableTexture: any = null;
       activeTheme: any = THEMES['luxus'];
+      currentBoardType: string = 'normal';
       specialMap = new Map();
+      opponentTempTiles: any[] = [];
+      onTempPlaceCallback: (placements: any[]) => void;
+      latestBoardData: any[] = [];
       
       state = {
         rack: [] as any[],
@@ -209,7 +225,8 @@ export default function WordMasterGame() {
         isMyTurn: false
       };
 
-      constructor(container: HTMLElement) {
+      constructor(container: HTMLElement, syncCallback: any) {
+        this.onTempPlaceCallback = syncCallback;
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 100);
         this.camera.position.set(25, 15, 25); 
@@ -233,27 +250,27 @@ export default function WordMasterGame() {
         this.loadTextures();
         this.initLights();
         this.createTable();
-        this.generateBoardLayout('normal');
+        this.generateBoardLayout(this.currentBoardType);
         this.initBoard();
         this.fillRack();
         this.addEvents();
         this.animate();
-
-        // Betöltjük az esetleges meglévő tábla állapotot (ha később csatlakozik be valaki)
-        setTimeout(() => {
-            if (latestBoardData.current && latestBoardData.current.length > 0) {
-                this.syncBoardFromFirebase(latestBoardData.current);
-            }
-        }, 200);
       }
 
       updateConfig(newConfig: any) {
-          this.activeTheme = (THEMES as any)[newConfig.theme] || THEMES['luxus'];
-          this.updateThemeColors();
-          this.loadTextures();
-          this.createTable(); 
-          this.generateBoardLayout(newConfig.boardType);
-          this.initBoard(); 
+          const newTheme = (THEMES as any)[newConfig.theme] || THEMES['luxus'];
+          // Csak akkor rajzoljuk újra a táblát, ha tényleg változott a téma, így nem tűnnek el a betűk
+          if (this.activeTheme.name !== newTheme.name || this.currentBoardType !== newConfig.boardType) {
+              this.activeTheme = newTheme;
+              this.currentBoardType = newConfig.boardType;
+              this.updateThemeColors();
+              this.loadTextures();
+              this.createTable(); 
+              this.generateBoardLayout(this.currentBoardType);
+              this.initBoard(); 
+              // Visszatöltjük a betűket a letörlés után
+              this.syncBoardFromFirebase(this.latestBoardData);
+          }
       }
 
       updateThemeColors() {
@@ -313,7 +330,8 @@ export default function WordMasterGame() {
         const geo = new THREE.PlaneGeometry(150, 150);
         const mat = new THREE.MeshStandardMaterial({ map: this.tableTexture, roughness: 0.5, metalness: 0.1 });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.name = "tableMesh"; mesh.rotation.x = -Math.PI / 2; mesh.position.y = -2; mesh.receiveShadow = true;
+        mesh.name = "tableMesh";
+        mesh.rotation.x = -Math.PI / 2; mesh.position.y = -2; mesh.receiveShadow = true;
         this.scene.add(mesh);
       }
 
@@ -338,7 +356,6 @@ export default function WordMasterGame() {
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
         if (this.textureCache[id]) return this.textureCache[id];
-
         const size = 512; const cvs = document.createElement('canvas'); cvs.width = size; cvs.height = size;
         const ctx = cvs.getContext('2d')!;
 
@@ -421,6 +438,14 @@ export default function WordMasterGame() {
         });
       }
 
+      // SEGÉDFÜGGVÉNY A VALÓS IDEJŰ SZINKRONHOZ
+      triggerTempSync() {
+        if(this.onTempPlaceCallback) {
+            const tempMap = this.state.placedThisTurn.map(p => ({ r: p.r, c: p.c, char: p.tile.userData.char }));
+            this.onTempPlaceCallback(tempMap);
+        }
+      }
+
       // --- MOBIL & EGÉR TOUCH ESEMÉNYEK ---
       addEvents() {
         const el = this.renderer.domElement;
@@ -491,9 +516,9 @@ export default function WordMasterGame() {
         el.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
 
-        // Kifejezetten telefonos érintésre: preventDefault() letiltja a görgetést játék közben!
-        el.addEventListener('touchstart', (e) => { e.preventDefault(); onDown(e); }, { passive: false });
-        el.addEventListener('touchmove', (e) => { e.preventDefault(); onMove(e); }, { passive: false });
+        // Kifejezetten telefonos érintés, CSS-ben van letiltva a görgetés
+        el.addEventListener('touchstart', onDown, { passive: false });
+        el.addEventListener('touchmove', onMove, { passive: false });
         window.addEventListener('touchend', onUp);
 
         window.addEventListener('resize', this.onResize);
@@ -506,8 +531,9 @@ export default function WordMasterGame() {
             gsap.to(tile.position, {x:(c-7)*1.05, y:0.18, z:(r-7)*1.05, duration:0.4, ease:"back.out(1.5)"});
             const idx = this.state.rack.indexOf(tile); if(idx>-1) this.state.rack.splice(idx,1);
             this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
-            this.state.placedThisTurn.push({tile, r, c, char:tile.userData.char});
+            this.state.placedThisTurn.push({tile, r, c});
             tile.userData.isPlaced = true;
+            this.triggerTempSync(); // Valós idejű küldés
         } else this.returnToRack(tile);
       }
 
@@ -515,6 +541,7 @@ export default function WordMasterGame() {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
         tile.userData.isPlaced=false; this.arrangeRack();
+        this.triggerTempSync(); // Valós idejű küldés
       }
 
       async validateTurn() {
@@ -539,7 +566,7 @@ export default function WordMasterGame() {
 
             for(let c = startC; c <= endC; c++) {
                 const pTile = placed.find(p => p.c === c);
-                if (pTile) { mainWord += pTile.char; }
+                if (pTile) { mainWord += pTile.tile.userData.char; }
                 else {
                     const bTile = this.state.boardGrid[r][c];
                     if (bTile) mainWord += bTile.userData.char;
@@ -556,7 +583,7 @@ export default function WordMasterGame() {
 
             for(let r = startR; r <= endR; r++) {
                 const pTile = placed.find(p => p.r === r);
-                if (pTile) { mainWord += pTile.char; }
+                if (pTile) { mainWord += pTile.tile.userData.char; }
                 else {
                     const bTile = this.state.boardGrid[r][c];
                     if (bTile) mainWord += bTile.userData.char;
@@ -579,7 +606,7 @@ export default function WordMasterGame() {
         return points;
       }
 
-      // TÁBLA KIMENTÉSE
+      // TÁBLA KIMENTÉSE A FELHŐBE
       getBoardSnapshot() {
         const data: any[] = [];
         for(let r=0; r<15; r++) {
@@ -593,8 +620,9 @@ export default function WordMasterGame() {
         return data;
       }
 
-      // TÁBLA BETÖLTÉSE A TÖBBIEKNÉL
+      // TÁBLA BETÖLTÉSE A TÖBBIEKNÉL (Ami már véglegesítve lett)
       syncBoardFromFirebase(boardData: any[]) {
+        this.latestBoardData = boardData;
         boardData.forEach(item => {
             if (!this.state.boardGrid[item.r][item.c]) {
                 const newTile = this.createTileMesh(item.char);
@@ -603,6 +631,29 @@ export default function WordMasterGame() {
                 this.state.boardGrid[item.r][item.c] = newTile;
                 newTile.userData.isPlaced = true;
             }
+        });
+      }
+
+      // VALÓS IDEJŰ "SZELLEM" BETŰK MEGJELENÍTÉSE
+      syncOpponentPlacements(placements: any[]) {
+        // Töröljük a régi szellemeket
+        this.opponentTempTiles.forEach((t: any) => this.scene.remove(t));
+        this.opponentTempTiles = [];
+
+        // Ha a mi körünk van, nem rajzoljuk ki a sajátunkat duplán
+        if (this.state.isMyTurn) return;
+
+        placements.forEach(p => {
+            const mesh = this.createTileMesh(p.char);
+            // Áttetsző "szellem" effekt
+            mesh.material.forEach((mat: any) => { 
+                mat.transparent = true; 
+                mat.opacity = 0.6; 
+                if(mat.color) mat.color.setHex(0xaaddff); 
+            });
+            mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+            this.scene.add(mesh);
+            this.opponentTempTiles.push(mesh);
         });
       }
 
@@ -625,7 +676,7 @@ export default function WordMasterGame() {
       }
     }
 
-    const gameInstance = new Game(containerRef.current);
+    const gameInstance = new Game(containerRef.current, onTempPlaceSync);
     gameRef.current = gameInstance;
     return () => gameInstance.dispose();
   }, []);
@@ -675,13 +726,14 @@ export default function WordMasterGame() {
         score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    // TÁBLA ÁLLAPOTÁNAK MENTÉSE ÉS KÜLDÉSE BIZTONSÁGOSAN (JSON)
     const boardSnapshot = gameRef.current.getBoardSnapshot();
 
+    // Véglegesítjük a táblát, a szellem-betűket pedig töröljük a felhőből!
     await update(ref(db, `rooms/${roomId}`), { 
         currentTurn: nextTurn, 
         players: newPlayers,
-        boardData: JSON.stringify(boardSnapshot) // Biztonságos küldés
+        boardData: JSON.stringify(boardSnapshot),
+        tempPlacements: JSON.stringify([]) 
     });
 
     showToast(`Kész! +${pts}`, false);
@@ -695,15 +747,16 @@ export default function WordMasterGame() {
   return (
     <>
       <style jsx global>{`
+        /* MOBIL OPTIMALIZÁCIÓ KÖZÉPPONTBAN */
         body { 
             margin: 0; 
             overflow: hidden; 
             font-family: 'Inter', sans-serif; 
             background: #000;
-            /* LETILTJA A LEFELE HÚZÁSRA TÖRTÉNŐ FRISSÍTÉST TELEFONON */
-            touch-action: none; 
+            touch-action: none; /* LETILTJA A BÖNGÉSZŐ FRISSÍTÉSÉT LEFELÉ HÚZÁSNÁL */
+            overscroll-behavior: none;
         }
-        .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+        .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
         
         .popup-overlay {
             position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
@@ -711,17 +764,17 @@ export default function WordMasterGame() {
         }
         .popup-box {
             background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
-            border: 2px solid #ffcc00; padding: 30px; border-radius: 20px;
+            border: 2px solid #ffcc00; padding: 25px; border-radius: 20px;
             text-align: center; color: white; box-shadow: 0 0 50px rgba(255, 204, 0, 0.3);
             width: 90%; max-width: 350px;
         }
         
-        /* MOBIL-BARÁT PANELEK */
+        /* RESZPONZÍV PANELEK */
         .glass-panel {
             pointer-events: auto; background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 30px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 25px 20px;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; 
-            width: 90%; max-width: 400px;
+            width: 92%; max-width: 400px; box-sizing: border-box;
         }
         .menu-title { font-size: 32px; font-weight: 900; text-align: center; margin-bottom: 20px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; }
         
@@ -729,12 +782,14 @@ export default function WordMasterGame() {
         .modern-btn.active { background: white; color: black; border-color: white; }
         .play-btn { width: 100%; margin-top: 15px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 16px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
         
-        .game-header { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 20px; width: 100%; box-sizing: border-box; }
-        .player-pill { background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); padding: 8px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
+        /* JÁTÉK FELÜLET FELSŐ SÁVJA */
+        .game-header { position: absolute; top: 0; left: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 10px; width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); backdrop-filter: blur(5px); z-index: 20; }
+        .player-pill { background: rgba(0,0,0,0.6); padding: 6px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
         .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
         
-        .bottom-bar { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; pointer-events: none; padding: 0 10px; box-sizing: border-box; }
-        .action-btn { pointer-events: auto; padding: 12px 20px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 14px; backdrop-filter: blur(10px); }
+        /* JÁTÉK FELÜLET ALSÓ SÁVJA */
+        .bottom-bar { position: absolute; bottom: 15px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; pointer-events: none; padding: 0 10px; box-sizing: border-box; z-index: 20; }
+        .action-btn { pointer-events: auto; padding: 12px 18px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 13px; backdrop-filter: blur(10px); }
         .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
         .btn-primary { background: #10b981; color: white; }
         
@@ -745,6 +800,12 @@ export default function WordMasterGame() {
         .input-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; margin-bottom: 5px; }
         .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
         .modern-input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 12px; color: white; margin-bottom: 5px; font-weight: 600; box-sizing: border-box;}
+
+        @media (max-width: 600px) {
+            .menu-title { font-size: 26px; }
+            .glass-panel { padding: 20px 15px; }
+            .play-btn { padding: 14px; font-size: 14px; }
+        }
       `}</style>
       
       <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
@@ -826,7 +887,7 @@ export default function WordMasterGame() {
                     {config.playerNames.map((name, i) => (
                         <div key={i} className={`player-pill ${currentPlayer===i?'active':''}`}>
                             <div style={{fontSize:'10px', opacity:0.7, textTransform:'uppercase'}}>{name}</div>
-                            <div style={{fontSize:'18px', fontWeight:'800'}}>{scores[i] || 0}</div>
+                            <div style={{fontSize:'16px', fontWeight:'800'}}>{scores[i] || 0}</div>
                         </div>
                     ))}
                 </div>
@@ -837,7 +898,7 @@ export default function WordMasterGame() {
 
                 <div className="bottom-bar">
                     {config.playerNames[currentPlayer] !== playerName ? (
-                        <div style={{ padding: '12px 20px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', border: '2px solid rgba(255,255,255,0.2)', pointerEvents:'auto' }}>
+                        <div style={{ padding: '10px 16px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', border: '2px solid rgba(255,255,255,0.2)', pointerEvents:'auto', fontSize:'13px' }}>
                             ⏳ Várakozás {config.playerNames[currentPlayer]} lépésére...
                         </div>
                     ) : (
