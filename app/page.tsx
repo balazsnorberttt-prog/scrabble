@@ -65,6 +65,9 @@ export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   
+  // Globális ref, amiben azonnal frissül a felhőből kapott tábla adat
+  const latestBoardData = useRef<any[]>([]);
+
   // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
@@ -73,7 +76,6 @@ export default function WordMasterGame() {
   const [validating, setValidating] = useState(false);
   const [popupData, setPopupData] = useState<any>(null); 
   
-  // --- MULTIPLAYER ÁLLAPOTOK ---
   const [roomId, setRoomId] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [isHost, setIsHost] = useState(false);
@@ -90,7 +92,6 @@ export default function WordMasterGame() {
     setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
   };
 
-  // Átadjuk a 3D motornak az infót, hogy a mi körünk van-e éppen
   useEffect(() => {
     if (gameRef.current && config.playerNames.length > 0) {
         const activePlayerName = config.playerNames[currentPlayer];
@@ -111,7 +112,7 @@ export default function WordMasterGame() {
       players: [{ name: playerName, score: 0 }],
       currentTurn: 0,
       hostName: playerName,
-      boardData: [] // Üres táblával indulunk
+      boardData: JSON.stringify([]) // Biztonságos JSON string
     });
 
     setRoomId(newRoomId);
@@ -156,9 +157,13 @@ export default function WordMasterGame() {
         setScores(syncedScores);
         setCurrentPlayer(data.currentTurn || 0);
         
-        // --- TÁBLA FRISSÍTÉSE A TÖBBIEKNÉL ---
-        if (data.boardData && gameRef.current) {
-            gameRef.current.syncBoardFromFirebase(data.boardData);
+        // TÁBLA FRISSÍTÉSE - Biztonságos JSON parse
+        if (data.boardData) {
+            const parsedData = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+            latestBoardData.current = parsedData;
+            if (gameRef.current) {
+                gameRef.current.syncBoardFromFirebase(parsedData);
+            }
         }
 
         if (data.status === 'playing' && gameState !== 'playing') {
@@ -213,7 +218,6 @@ export default function WordMasterGame() {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
         container.appendChild(this.renderer.domElement);
 
@@ -234,6 +238,13 @@ export default function WordMasterGame() {
         this.fillRack();
         this.addEvents();
         this.animate();
+
+        // Betöltjük az esetleges meglévő tábla állapotot (ha később csatlakozik be valaki)
+        setTimeout(() => {
+            if (latestBoardData.current && latestBoardData.current.length > 0) {
+                this.syncBoardFromFirebase(latestBoardData.current);
+            }
+        }, 200);
       }
 
       updateConfig(newConfig: any) {
@@ -276,7 +287,6 @@ export default function WordMasterGame() {
         const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
         dirLight.position.set(15, 30, 10);
         dirLight.castShadow = true;
-        dirLight.shadow.mapSize.set(2048, 2048);
         this.scene.add(dirLight);
         this.camera.add(new THREE.PointLight(0xffffff, 0.4));
         this.scene.add(this.camera);
@@ -289,8 +299,6 @@ export default function WordMasterGame() {
         grd.addColorStop(0, this.activeTheme.tableParams.color1); 
         grd.addColorStop(1, this.activeTheme.tableParams.color2); 
         ctx.fillStyle = grd; ctx.fillRect(0,0,1024,1024);
-        ctx.fillStyle = 'rgba(0,0,0,0.05)';
-        for(let i=0;i<1000;i++) ctx.fillRect(Math.random()*1024, Math.random()*1024, 2, 2);
         this.tableTexture = new THREE.CanvasTexture(cvs);
         
         const cvsW = document.createElement('canvas'); cvsW.width = 512; cvsW.height = 512;
@@ -302,41 +310,22 @@ export default function WordMasterGame() {
       createTable() {
         const oldTable = this.scene.getObjectByName("tableMesh");
         if(oldTable) this.scene.remove(oldTable);
-
         const geo = new THREE.PlaneGeometry(150, 150);
         const mat = new THREE.MeshStandardMaterial({ map: this.tableTexture, roughness: 0.5, metalness: 0.1 });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.name = "tableMesh";
-        mesh.rotation.x = -Math.PI / 2; mesh.position.y = -2; mesh.receiveShadow = true;
+        mesh.name = "tableMesh"; mesh.rotation.x = -Math.PI / 2; mesh.position.y = -2; mesh.receiveShadow = true;
         this.scene.add(mesh);
       }
 
       generateBoardLayout(type: string) {
         this.specialMap.clear();
         this.specialMap.set('7_7', { lines:['★', 'START'], color: this.activeTheme.special.start });
-
         if (type === 'normal') {
             const setSym = (arr: any[], val: any) => arr.forEach(p => this.specialMap.set(`${p[0]}_${p[1]}`, val));
-            const tw = [[0,0], [0,7], [0,14], [7,0], [7,14], [14,0], [14,7], [14,14]];
-            const dw = [[1,1], [2,2], [3,3], [4,4], [1,13], [2,12], [3,11], [4,10], [13,1], [12,2], [11,3], [10,4], [13,13], [12,12], [11,11], [10,10]];
-            const tl = [[1,5], [1,9], [5,1], [5,5], [5,9], [5,13], [9,1], [9,5], [9,9], [9,13], [13,5], [13,9]];
-            const dl = [[0,3], [0,11], [2,6], [2,8], [3,0], [3,7], [3,14], [6,2], [6,6], [6,8], [6,12], [7,3], [7,11], [8,2], [8,6], [8,8], [8,12], [11,0], [11,7], [11,14], [12,6], [12,8], [14,3], [14,11]];
-            
-            setSym(tw, { lines:['TRIPLA', 'SZÓ'], color: this.activeTheme.special.tw });
-            setSym(dw, { lines:['DUPLA', 'SZÓ'], color: this.activeTheme.special.dw });
-            setSym(tl, { lines:['TRIPLA', 'BETŰ'], color: this.activeTheme.special.tl });
-            setSym(dl, { lines:['DUPLA', 'BETŰ'], color: this.activeTheme.special.dl });
-        } else {
-            for(let r=0; r<15; r++) {
-                for(let c=0; c<15; c++) {
-                    if (r===7 && c===7) continue;
-                    const rand = Math.random();
-                    if (rand < 0.05) this.specialMap.set(`${r}_${c}`, { lines:['TRIPLA', 'SZÓ'], color: this.activeTheme.special.tw });
-                    else if (rand < 0.1) this.specialMap.set(`${r}_${c}`, { lines:['DUPLA', 'SZÓ'], color: this.activeTheme.special.dw });
-                    else if (rand < 0.15) this.specialMap.set(`${r}_${c}`, { lines:['TRIPLA', 'BETŰ'], color: this.activeTheme.special.tl });
-                    else if (rand < 0.2) this.specialMap.set(`${r}_${c}`, { lines:['DUPLA', 'BETŰ'], color: this.activeTheme.special.dl });
-                }
-            }
+            setSym([[0,0], [0,7], [0,14], [7,0], [7,14], [14,0], [14,7], [14,14]], { lines:['TRIPLA', 'SZÓ'], color: this.activeTheme.special.tw });
+            setSym([[1,1], [2,2], [3,3], [4,4], [1,13], [2,12], [3,11], [4,10], [13,1], [12,2], [11,3], [10,4], [13,13], [12,12], [11,11], [10,10]], { lines:['DUPLA', 'SZÓ'], color: this.activeTheme.special.dw });
+            setSym([[1,5], [1,9], [5,1], [5,5], [5,9], [5,13], [9,1], [9,5], [9,9], [9,13], [13,5], [13,9]], { lines:['TRIPLA', 'BETŰ'], color: this.activeTheme.special.tl });
+            setSym([[0,3], [0,11], [2,6], [2,8], [3,0], [3,7], [3,14], [6,2], [6,6], [6,8], [6,12], [7,3], [7,11], [8,2], [8,6], [8,8], [8,12], [11,0], [11,7], [11,14], [12,6], [12,8], [14,3], [14,11]], { lines:['DUPLA', 'BETŰ'], color: this.activeTheme.special.dl });
         }
       }
 
@@ -355,58 +344,33 @@ export default function WordMasterGame() {
 
         if (isTile) {
             const grd = ctx.createLinearGradient(0,0,size,size);
-            if(this.activeTheme.name === 'Nordic Frost') { grd.addColorStop(0, '#ffffff'); grd.addColorStop(1, '#f3f4f6'); }
-            else if(this.activeTheme.name === 'Cyberpunk Neon') { grd.addColorStop(0, '#1e293b'); grd.addColorStop(1, '#0f172a'); }
-            else { grd.addColorStop(0, '#fceabb'); grd.addColorStop(1, '#f8b500'); }
-            ctx.fillStyle = grd; ctx.fillRect(0,0,size,size);
+            ctx.fillStyle = '#fceabb'; ctx.fillRect(0,0,size,size);
         } else {
-            const hex = '#' + new THREE.Color(color!).getHexString();
-            ctx.fillStyle = hex; ctx.fillRect(0,0,size,size);
+            ctx.fillStyle = '#' + new THREE.Color(color!).getHexString(); ctx.fillRect(0,0,size,size);
             ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.lineWidth = 10; ctx.strokeRect(0,0,size,size);
         }
 
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        let textColor, strokeColor;
+        let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
         
         if (isTile) {
-            textColor = this.activeTheme.name === 'Cyberpunk Neon' ? '#00ffcc' : '#111';
-            strokeColor = 'transparent';
-        } else {
-            if (this.activeTheme.isDark) { textColor = '#ffffff'; strokeColor = '#000000'; }
-            else { textColor = '#1f2937'; strokeColor = '#ffffff'; }
-        }
-
-        if (isTile) {
-            ctx.fillStyle = textColor; ctx.font = 'bold 280px "Segoe UI", sans-serif';
+            ctx.fillStyle = textColor; ctx.font = 'bold 280px "Arial", sans-serif';
             ctx.fillText(lines[0], size/2, size/2 - 25);
-            ctx.font = 'bold 80px "Segoe UI", sans-serif'; ctx.fillText("1", size - 70, size - 70);
+            ctx.font = 'bold 80px "Arial", sans-serif'; ctx.fillText("1", size - 70, size - 70);
         } else if (lines.length > 0) {
-            ctx.fillStyle = textColor; ctx.strokeStyle = strokeColor!; ctx.lineWidth = 8;
-            let fontSize = 70;
-            const longest = lines.reduce((a, b) => a.length > b.length ? a : b, "");
-            if (longest.length > 8) fontSize = 55;
-            ctx.font = `900 ${fontSize}px "Arial Black", sans-serif`;
-            const lh = fontSize * 1.1;
-            let startY = (size - (lines.length * lh)) / 2 + lh/2;
-            lines.forEach((line, i) => {
-                const y = startY + i * lh; ctx.strokeText(line, size/2, y); ctx.fillText(line, size/2, y);
-            });
+            ctx.fillStyle = textColor; ctx.font = `900 65px "Arial", sans-serif`;
+            lines.forEach((line, i) => { ctx.fillText(line, size/2, 220 + i * 80); });
         }
-        const tex = new THREE.CanvasTexture(cvs);
-        tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
-        this.textureCache[id] = tex;
-        return tex;
+        return new THREE.CanvasTexture(cvs);
       }
 
       initBoard() {
         const oldGroup = this.scene.getObjectByName("boardGroup");
         if(oldGroup) this.scene.remove(oldGroup);
-
-        const group = new THREE.Group();
-        group.name = "boardGroup";
+        const group = new THREE.Group(); group.name = "boardGroup";
 
         const frameGeo = new RoundedBoxGeometry(17.2, 1.0, 17.2, 4, 0.2);
-        const frameMat = new THREE.MeshPhysicalMaterial({ map: this.woodTexture, color: this.activeTheme.frameColor, roughness: 0.5, clearcoat: 0.3 });
+        const frameMat = new THREE.MeshPhysicalMaterial({ map: this.woodTexture, color: this.activeTheme.frameColor, roughness: 0.5 });
         const frame = new THREE.Mesh(frameGeo, frameMat);
         frame.position.y = -0.55; frame.receiveShadow = true; group.add(frame);
 
@@ -415,12 +379,10 @@ export default function WordMasterGame() {
             for(let c=0; c<15; c++) {
                 const info = this.getCellInfo(r, c);
                 const tex = this.getTexture(info.lines, info.color, false);
-                const matBody = new THREE.MeshPhysicalMaterial({ color: info.color, roughness: 0.8 });
-                const matTop = new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.8, clearcoat: 0 });
+                const matTop = new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.8 });
+                const matBody = new THREE.MeshPhysicalMaterial({ color: info.color });
                 const cell = new THREE.Mesh(cellGeo, [matBody, matBody, matTop, matBody, matBody, matBody]);
-                cell.position.set((c-7)*1.05, 0.05, (r-7)*1.05);
-                cell.receiveShadow = true; cell.userData = { isSlot: true, r, c };
-                group.add(cell);
+                cell.position.set((c-7)*1.05, 0.05, (r-7)*1.05); cell.userData = { isSlot: true, r, c }; group.add(cell);
             }
         }
         this.scene.add(group);
@@ -429,21 +391,18 @@ export default function WordMasterGame() {
       createTileMesh(char: string) {
         const geo = new RoundedBoxGeometry(0.95, 0.25, 0.95, 4, 0.08);
         const tex = this.getTexture([char], null, true);
-        const matBody = new THREE.MeshPhysicalMaterial({ color: 0xccaa88, roughness: 0.4 });
-        const matTop = new THREE.MeshPhysicalMaterial({ map: tex, color: 0xffffff, roughness: 0.2, clearcoat: 1.0 });
+        const matTop = new THREE.MeshPhysicalMaterial({ map: tex, color: 0xffffff, roughness: 0.2 });
+        const matBody = new THREE.MeshPhysicalMaterial({ color: 0xccaa88 });
         const mesh = new THREE.Mesh(geo, [matBody, matBody, matTop, matBody, matBody, matBody]);
-        mesh.castShadow = true; mesh.receiveShadow = true;
-        mesh.userData = { isTile: true, char: char };
+        mesh.castShadow = true; mesh.userData = { isTile: true, char: char };
         return mesh;
       }
       
       fillRack() {
-        const needed = 7 - this.state.rack.length;
-        if(needed <= 0) return;
-        for(let i=0; i<needed; i++) {
+        while(this.state.rack.length < 7) {
             const char = HUNGARIAN_LETTERS[Math.floor(Math.random() * HUNGARIAN_LETTERS.length)];
             const tile = this.createTileMesh(char);
-            tile.position.set((Math.random()>0.5?20:-20), 8, 15);
+            tile.position.set(0, 8, 15);
             this.scene.add(tile);
             this.state.rack.push(tile);
             tile.userData.isPlaced = false;
@@ -455,69 +414,89 @@ export default function WordMasterGame() {
         this.state.rack.forEach((tile, i) => {
             if(tile.userData.isPlaced) return;
             const x = (i - (this.state.rack.length-1)/2) * 1.1;
-            const targetPos = new THREE.Vector3(x, 1.2, 10.5);
             if(!this.dragging && tile !== this.selectedTile) {
-                gsap.to(tile.position, { x: targetPos.x, y: targetPos.y, z: targetPos.z, duration: 0.6 });
+                gsap.to(tile.position, { x: x, y: 1.2, z: 10.5, duration: 0.6 });
                 gsap.to(tile.rotation, { x: Math.PI / 3, y: 0, z: 0, duration: 0.6 });
             }
-            tile.userData.homePos = targetPos;
         });
       }
 
+      // --- MOBIL & EGÉR TOUCH ESEMÉNYEK ---
       addEvents() {
         const el = this.renderer.domElement;
-        el.addEventListener('mousedown', this.onDown);
-        el.addEventListener('mousemove', this.onMove);
-        el.addEventListener('mouseup', this.onUp);
-        window.addEventListener('resize', this.onResize);
-      }
 
-      onDown = (e: MouseEvent) => {
-        if (!this.state.isMyTurn) return; 
+        const getPointer = (e: any) => {
+            if (e.touches && e.touches.length > 0) return e.touches[0];
+            if (e.changedTouches && e.changedTouches.length > 0) return e.changedTouches[0];
+            return e;
+        };
 
-        const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
-        this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
-        const hits = this.raycaster.intersectObjects(this.scene.children, true);
-        
-        const hitTile = hits.find((i:any)=>i.object.userData.isTile);
-        if(hitTile) {
-            const t = hitTile.object;
-            const fixed = this.state.boardGrid.some(r=>r.includes(t)) && !this.state.placedThisTurn.some(p=>p.tile===t);
-            if(!fixed) {
-                if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
-                this.dragging = t; this.selectedTile = t; this.controls.enabled = false;
-                gsap.to(t.position, {y:3, duration:0.2}); gsap.to(t.rotation, {x:0, z:0, duration:0.2});
+        const onDown = (e: any) => {
+            if (!this.state.isMyTurn) return; 
+            const p = getPointer(e);
+            const rect = el.getBoundingClientRect();
+            this.mouse.x = ((p.clientX - rect.left) / rect.width) * 2 - 1;
+            this.mouse.y = -((p.clientY - rect.top) / rect.height) * 2 + 1;
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+            const hits = this.raycaster.intersectObjects(this.scene.children, true);
+            
+            const hitTile = hits.find((i:any)=>i.object.userData.isTile);
+            if(hitTile) {
+                const t = hitTile.object;
+                const fixed = this.state.boardGrid.some(r=>r.includes(t)) && !this.state.placedThisTurn.some(p=>p.tile===t);
+                if(!fixed) {
+                    if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
+                    this.dragging = t; this.selectedTile = t; this.controls.enabled = false;
+                    gsap.to(t.position, {y:3, duration:0.2}); gsap.to(t.rotation, {x:0, z:0, duration:0.2});
+                }
+                return;
             }
-            return;
-        }
-        const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
-        if(hitSlot && this.selectedTile) {
-            const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
-            this.placeTileToGrid(this.selectedTile, r, c);
-            this.selectedTile = null;
-        }
-        if(!hitTile && !hitSlot && this.selectedTile) {
-            this.returnToRack(this.selectedTile); this.selectedTile = null;
-        }
-      }
+            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
+            if(hitSlot && this.selectedTile) {
+                const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
+                this.placeTileToGrid(this.selectedTile, r, c);
+                this.selectedTile = null;
+            }
+            if(!hitTile && !hitSlot && this.selectedTile) {
+                this.returnToRack(this.selectedTile); this.selectedTile = null;
+            }
+        };
 
-      onMove = (e: MouseEvent) => {
-        if(!this.dragging || !this.state.isMyTurn) return;
-        const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
-        this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
-        const target = new THREE.Vector3();
-        this.raycaster.ray.intersectPlane(this.dragPlane, target);
-        if(target) this.dragging.position.copy(target);
-      }
+        const onMove = (e: any) => {
+            if(!this.dragging || !this.state.isMyTurn) return;
+            const p = getPointer(e);
+            const rect = el.getBoundingClientRect();
+            this.mouse.x = ((p.clientX - rect.left) / rect.width) * 2 - 1;
+            this.mouse.y = -((p.clientY - rect.top) / rect.height) * 2 + 1;
+            this.raycaster.setFromCamera(this.mouse, this.camera);
+            const target = new THREE.Vector3();
+            this.raycaster.ray.intersectPlane(this.dragPlane, target);
+            if(target) this.dragging.position.copy(target);
+        };
 
-      onUp = () => {
-        if(!this.dragging || !this.state.isMyTurn) return;
-        const gx = Math.round(this.dragging.position.x/1.05); const gz = Math.round(this.dragging.position.z/1.05);
-        if(Math.abs(gx)<=7 && Math.abs(gz)<=7) {
-            this.placeTileToGrid(this.dragging, gz+7, gx+7);
-            this.selectedTile = null;
-        }
-        this.dragging=null; this.controls.enabled=true;
+        const onUp = () => {
+            if(!this.dragging || !this.state.isMyTurn) return;
+            const gx = Math.round(this.dragging.position.x/1.05); const gz = Math.round(this.dragging.position.z/1.05);
+            if(Math.abs(gx)<=7 && Math.abs(gz)<=7) {
+                this.placeTileToGrid(this.dragging, gz+7, gx+7);
+                this.selectedTile = null;
+            } else {
+                this.returnToRack(this.dragging);
+                this.selectedTile = null;
+            }
+            this.dragging = null; this.controls.enabled = true;
+        };
+
+        el.addEventListener('mousedown', onDown);
+        el.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+
+        // Kifejezetten telefonos érintésre: preventDefault() letiltja a görgetést játék közben!
+        el.addEventListener('touchstart', (e) => { e.preventDefault(); onDown(e); }, { passive: false });
+        el.addEventListener('touchmove', (e) => { e.preventDefault(); onMove(e); }, { passive: false });
+        window.addEventListener('touchend', onUp);
+
+        window.addEventListener('resize', this.onResize);
       }
 
       placeTileToGrid(tile: any, r: number, c: number) {
@@ -549,7 +528,6 @@ export default function WordMasterGame() {
         if (!isHoriz && !isVert) return { success: false, msg: "Csak egy vonalban!" };
 
         let mainWord = "";
-        let collectedTiles = [];
 
         if (isHoriz) {
             const r = placed[0].r;
@@ -561,7 +539,7 @@ export default function WordMasterGame() {
 
             for(let c = startC; c <= endC; c++) {
                 const pTile = placed.find(p => p.c === c);
-                if (pTile) { mainWord += pTile.char; collectedTiles.push(pTile); }
+                if (pTile) { mainWord += pTile.char; }
                 else {
                     const bTile = this.state.boardGrid[r][c];
                     if (bTile) mainWord += bTile.userData.char;
@@ -578,7 +556,7 @@ export default function WordMasterGame() {
 
             for(let r = startR; r <= endR; r++) {
                 const pTile = placed.find(p => p.r === r);
-                if (pTile) { mainWord += pTile.char; collectedTiles.push(pTile); }
+                if (pTile) { mainWord += pTile.char; }
                 else {
                     const bTile = this.state.boardGrid[r][c];
                     if (bTile) mainWord += bTile.userData.char;
@@ -601,7 +579,7 @@ export default function WordMasterGame() {
         return points;
       }
 
-      // --- 1. TÁBLA KIMENTÉSE ---
+      // TÁBLA KIMENTÉSE
       getBoardSnapshot() {
         const data: any[] = [];
         for(let r=0; r<15; r++) {
@@ -615,7 +593,7 @@ export default function WordMasterGame() {
         return data;
       }
 
-      // --- 2. TÁBLA BETÖLTÉSE A TÖBBIEKNÉL ---
+      // TÁBLA BETÖLTÉSE A TÖBBIEKNÉL
       syncBoardFromFirebase(boardData: any[]) {
         boardData.forEach(item => {
             if (!this.state.boardGrid[item.r][item.c]) {
@@ -652,7 +630,7 @@ export default function WordMasterGame() {
     return () => gameInstance.dispose();
   }, []);
 
-  // --- VALIDATION & TURN HANDLER ---
+  // --- LERAKÁS ÉS API ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
@@ -697,13 +675,13 @@ export default function WordMasterGame() {
         score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    // TÁBLA ÁLLAPOTÁNAK MENTÉSE ÉS KÜLDÉSE
+    // TÁBLA ÁLLAPOTÁNAK MENTÉSE ÉS KÜLDÉSE BIZTONSÁGOSAN (JSON)
     const boardSnapshot = gameRef.current.getBoardSnapshot();
 
     await update(ref(db, `rooms/${roomId}`), { 
         currentTurn: nextTurn, 
         players: newPlayers,
-        boardData: boardSnapshot
+        boardData: JSON.stringify(boardSnapshot) // Biztonságos küldés
     });
 
     showToast(`Kész! +${pts}`, false);
@@ -716,9 +694,16 @@ export default function WordMasterGame() {
 
   return (
     <>
-      <style jsx>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap');
-        .app-container { font-family: 'Inter', sans-serif; position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+      <style jsx global>{`
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: 'Inter', sans-serif; 
+            background: #000;
+            /* LETILTJA A LEFELE HÚZÁSRA TÖRTÉNŐ FRISSÍTÉST TELEFONON */
+            touch-action: none; 
+        }
+        .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
         
         .popup-overlay {
             position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
@@ -726,41 +711,40 @@ export default function WordMasterGame() {
         }
         .popup-box {
             background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
-            border: 2px solid #ffcc00; padding: 40px; border-radius: 20px;
+            border: 2px solid #ffcc00; padding: 30px; border-radius: 20px;
             text-align: center; color: white; box-shadow: 0 0 50px rgba(255, 204, 0, 0.3);
-            transform: perspective(1000px) rotateX(10deg);
-            animation: popupAnim 0.4s ease-out forwards;
+            width: 90%; max-width: 350px;
         }
-        @keyframes popupAnim { from { opacity:0; transform: perspective(1000px) rotateX(40deg) translateY(50px); } to { opacity:1; transform: perspective(1000px) rotateX(0) translateY(0); } }
         
+        /* MOBIL-BARÁT PANELEK */
         .glass-panel {
             pointer-events: auto; background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 40px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; width: 400px;
+            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 30px 20px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; 
+            width: 90%; max-width: 400px;
         }
-        .menu-title { font-size: 48px; font-weight: 900; text-align: center; margin-bottom: 30px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; text-shadow: 0 5px 15px rgba(0,0,0,0.3); }
-        .modern-btn { padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; cursor: pointer; transition: all 0.2s; font-weight: 600; }
-        .modern-btn:hover { background: rgba(255,255,255,0.1); transform: translateY(-2px); }
+        .menu-title { font-size: 32px; font-weight: 900; text-align: center; margin-bottom: 20px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; }
+        
+        .modern-btn { padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; cursor: pointer; transition: all 0.2s; font-weight: 600; font-size: 14px;}
         .modern-btn.active { background: white; color: black; border-color: white; }
-        .play-btn { width: 100%; margin-top: 20px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 18px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
-        .play-btn:hover { transform: scale(1.05); box-shadow: 0 0 30px rgba(234, 179, 8, 0.4); }
-        .game-header { display: flex; justify-content: space-between; padding: 30px; width: 100%; box-sizing: border-box; }
-        .player-pill { background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); padding: 10px 25px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; transition: all 0.3s; }
-        .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.1); box-shadow: 0 0 20px rgba(234, 179, 8,0.4); }
-        .bottom-bar { position: absolute; bottom: 40px; width: 100%; display: flex; justify-content: center; gap: 15px; pointer-events: none; }
-        .action-btn { pointer-events: auto; padding: 14px 28px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; backdrop-filter: blur(10px); transition: all 0.2s; display: flex; align-items: center; gap: 8px; box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
-        .action-btn:hover { transform: translateY(-3px); }
+        .play-btn { width: 100%; margin-top: 15px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 16px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
+        
+        .game-header { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; padding: 20px; width: 100%; box-sizing: border-box; }
+        .player-pill { background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); padding: 8px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
+        .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
+        
+        .bottom-bar { position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; pointer-events: none; padding: 0 10px; box-sizing: border-box; }
+        .action-btn { pointer-events: auto; padding: 12px 20px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 14px; backdrop-filter: blur(10px); }
         .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
         .btn-primary { background: #10b981; color: white; }
-        .toast { position: absolute; top: 100px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 12px 30px; border-radius: 50px; font-weight: 600; opacity: 0; transition: opacity 0.3s; }
+        
+        .toast { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 12px 20px; border-radius: 50px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 1000; text-align: center; width: max-content; max-width: 90%; }
         .toast.show { opacity: 1; }
-        .input-group { margin-bottom: 20px; }
-        .input-label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 2px; opacity: 0.7; margin-bottom: 10px; }
-        .option-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
-        .glass-btn { padding: 8px 16px; border-radius: 8px; background: rgba(255,255,255,0.1); color: white; border: none; cursor: pointer; font-weight: bold; transition: all 0.2s; }
-        .glass-btn:hover { background: rgba(255,255,255,0.2); }
-        .modern-input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 12px; color: white; margin-bottom: 8px; font-weight: 600; }
+        
+        .input-group { margin-bottom: 15px; }
+        .input-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; margin-bottom: 5px; }
+        .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+        .modern-input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 12px; color: white; margin-bottom: 5px; font-weight: 600; box-sizing: border-box;}
       `}</style>
       
       <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
@@ -768,12 +752,11 @@ export default function WordMasterGame() {
       {popupData && (
         <div className="popup-overlay">
             <div className="popup-box">
-                <h2 style={{margin:'0 0 10px 0', fontSize:'24px'}}>ISMERETLEN SZÓ</h2>
-                <div style={{fontSize:'36px', fontWeight:'bold', color:'#ffcc00', marginBottom:'20px'}}>"{popupData.word}"</div>
-                <p style={{marginBottom:'30px', opacity:0.8}}>Szeretnéd elfogadni és felvenni a szótárba?</p>
-                <div style={{display:'flex', gap:'20px', justifyContent:'center'}}>
-                    <button className="action-btn btn-glass" onClick={popupData.onReject} style={{background:'rgba(255,50,50,0.2)'}}>NEM</button>
-                    <button className="action-btn btn-primary" onClick={popupData.onAccept}>IGEN, ELFOGADOM</button>
+                <h2 style={{margin:'0 0 10px 0', fontSize:'20px'}}>ISMERETLEN SZÓ</h2>
+                <div style={{fontSize:'28px', fontWeight:'bold', color:'#ffcc00', marginBottom:'20px'}}>"{popupData.word}"</div>
+                <div style={{display:'flex', gap:'10px', justifyContent:'center'}}>
+                    <button className="action-btn btn-glass" onClick={popupData.onReject} style={{background:'rgba(255,50,50,0.2)', flex:1}}>NEM</button>
+                    <button className="action-btn btn-primary" onClick={popupData.onAccept} style={{flex:1}}>ELFOGAD</button>
                 </div>
             </div>
         </div>
@@ -783,41 +766,27 @@ export default function WordMasterGame() {
         {gameState === 'menu' && (
             <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center'}}>
                 <div className="glass-panel">
-                    <div className="menu-title">ULTIMATE<br/>WORD MASTER</div>
+                    <div className="menu-title">WORD MASTER</div>
                     
                     {!roomId ? (
                       <>
                         <div className="input-group">
                           <label className="input-label">Játékos neved</label>
-                          <input 
-                            className="modern-input" 
-                            placeholder="Pl.: Anna" 
-                            value={playerName} 
-                            onChange={(e) => setPlayerName(e.target.value.toUpperCase())} 
-                          />
+                          <input className="modern-input" placeholder="Pl.: Anna" value={playerName} onChange={(e) => setPlayerName(e.target.value.toUpperCase())} />
                         </div>
 
-                        <div style={{display:'flex', gap:'10px', marginTop:'20px'}}>
-                          <button className="play-btn" onClick={createRoom} style={{flex:1}}>ÚJ SZOBA LÉTREHOZÁSA</button>
-                        </div>
+                        <button className="play-btn" onClick={createRoom}>ÚJ SZOBA LÉTREHOZÁSA</button>
 
-                        <div style={{display:'flex', gap:'10px', marginTop:'20px', alignItems:'center'}}>
-                          <input 
-                            className="modern-input" 
-                            style={{marginBottom:0}} 
-                            placeholder="KÓD (Pl: ABCD)" 
-                            value={roomCodeInput} 
-                            maxLength={4}
-                            onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())} 
-                          />
+                        <div style={{display:'flex', gap:'10px', marginTop:'15px', alignItems:'center'}}>
+                          <input className="modern-input" style={{marginBottom:0}} placeholder="KÓD" value={roomCodeInput} maxLength={4} onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())} />
                           <button className="modern-btn active" onClick={joinRoom} style={{height:'100%'}}>CSATLAKOZÁS</button>
                         </div>
                       </>
                     ) : (
                       <>
-                        <div style={{textAlign:'center', marginBottom:'20px'}}>
+                        <div style={{textAlign:'center', marginBottom:'15px'}}>
                           <p style={{opacity:0.7, margin:0}}>Szoba kódja:</p>
-                          <h2 style={{fontSize:'32px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
+                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
                         </div>
 
                         {isHost && (
@@ -832,7 +801,7 @@ export default function WordMasterGame() {
                         )}
 
                         <div className="input-group">
-                            <label className="input-label">Játékosok a szobában ({config.playerNames.length}/4)</label>
+                            <label className="input-label">Játékosok ({config.playerNames.length}/4)</label>
                             <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
                               {config.playerNames.map((name, i) => (
                                   <div key={i} className="modern-input" style={{textAlign:'center', backgroundColor: 'rgba(234, 179, 8, 0.2)', borderColor: '#eab308'}}>{name}</div>
@@ -857,7 +826,7 @@ export default function WordMasterGame() {
                     {config.playerNames.map((name, i) => (
                         <div key={i} className={`player-pill ${currentPlayer===i?'active':''}`}>
                             <div style={{fontSize:'10px', opacity:0.7, textTransform:'uppercase'}}>{name}</div>
-                            <div style={{fontSize:'24px', fontWeight:'800'}}>{scores[i] || 0}</div>
+                            <div style={{fontSize:'18px', fontWeight:'800'}}>{scores[i] || 0}</div>
                         </div>
                     ))}
                 </div>
@@ -868,12 +837,11 @@ export default function WordMasterGame() {
 
                 <div className="bottom-bar">
                     {config.playerNames[currentPlayer] !== playerName ? (
-                        <div style={{ padding: '15px 30px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', border: '2px solid rgba(255,255,255,0.2)' }}>
+                        <div style={{ padding: '12px 20px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', border: '2px solid rgba(255,255,255,0.2)', pointerEvents:'auto' }}>
                             ⏳ Várakozás {config.playerNames[currentPlayer]} lépésére...
                         </div>
                     ) : (
                         <>
-                            <button className="action-btn btn-glass" onClick={backToMenu}>Menü</button>
                             <button className="action-btn btn-glass" onClick={()=>gameRef.current?.recall()}>Vissza</button>
                             <button className="action-btn btn-glass" onClick={()=>gameRef.current?.shuffle()}>Keverés</button>
                             <button className="action-btn btn-primary" onClick={handleValidate} disabled={validating}>
