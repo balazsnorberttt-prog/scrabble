@@ -394,9 +394,11 @@ export default function WordMasterGame() {
       // --- TEXTURE MEMÓRIA JAVÍTÁS (Canvas Cache & Szabadítás) ---
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
+        
+        // Ha már legeneráltuk ezt a betűt (pl. "A"), azonnal visszaadjuk a Cache-ből!
         if (this.textureCache[id]) return this.textureCache[id];
 
-        const size = 256; // MOBILON KRITIKUS: felezzük a felbontást
+        const size = 256; 
         const cvs = document.createElement('canvas'); 
         cvs.width = size; cvs.height = size;
         const ctx = cvs.getContext('2d')!;
@@ -413,7 +415,6 @@ export default function WordMasterGame() {
         let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
         
         if (isTile) {
-            // Skálázott fontméretek a 256-os canvas-hoz
             ctx.fillStyle = textColor; ctx.font = 'bold 140px "Arial", sans-serif';
             ctx.fillText(lines[0], size/2, size/2 - 12);
             ctx.font = 'bold 40px "Arial", sans-serif'; ctx.fillText("1", size - 35, size - 35);
@@ -423,12 +424,15 @@ export default function WordMasterGame() {
         }
         
         const texture = new THREE.CanvasTexture(cvs);
+        
+        // KÖTELEZŐ MOBILON: Megmondjuk a motornak, hogy dolgozza fel a textúrát
+        texture.needsUpdate = true;
+        
         this.textureCache[id] = texture;
 
-        // CANVAS FELSZABADÍTÁSA MEMÓRIÁBÓL
-        cvs.width = 0;
-        cvs.height = 0;
-
+        // KIVETTÜK A CANVAS NULLÁZÁSÁT! A memóriát a textureCache védi meg, 
+        // mert így egy "A" betűt csak egyszer generálunk le az egész játék alatt.
+        
         return texture;
       }
 
