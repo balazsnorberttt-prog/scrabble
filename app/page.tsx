@@ -88,6 +88,9 @@ export default function WordMasterGame() {
   const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
   const [globalTempData, setGlobalTempData] = useState<any[]>([]);
 
+  // Stabilitási flag a felesleges Canvas renderelések megakadályozására
+  const prevBoardRef = useRef<string>('');
+
   useEffect(() => {
     const meta = document.createElement('meta');
     meta.name = 'viewport';
@@ -110,11 +113,22 @@ export default function WordMasterGame() {
     }
   }, [currentPlayer, playerName, config.playerNames]);
 
-  // Biztonságos szinkronizálás a React állapotból a 3D motorba
+  // --- AZ OPTIMALIZÁLT SZINKRONIZÁTOR ---
   useEffect(() => {
-    if (gameRef.current && gameState === 'playing') {
-        gameRef.current.syncBoardFromFirebase(globalBoardData);
-    }
+    if (gameState !== 'playing') return;
+    
+    const serialized = JSON.stringify(globalBoardData);
+    if (serialized === prevBoardRef.current) return; // ← Semmi nem változott, skippeljük!
+    prevBoardRef.current = serialized;
+    
+    const trySync = () => {
+        if (gameRef.current) {
+            gameRef.current.syncBoardFromFirebase(globalBoardData);
+        } else {
+            setTimeout(trySync, 200);
+        }
+    };
+    trySync();
   }, [globalBoardData, gameState]);
 
   useEffect(() => {
@@ -241,7 +255,7 @@ export default function WordMasterGame() {
       state = {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
-        logicalBoard: [] as {r: number, c: number, char: string}[], // AZ ÚJ TISZTA ADAT RENDSZER
+        logicalBoard: [] as {r: number, c: number, char: string}[],
         placedThisTurn: [] as any[],
         turnCount: 0,
         isMyTurn: false
@@ -377,10 +391,14 @@ export default function WordMasterGame() {
         return { lines:[], color: this.activeTheme.boardField };
       }
 
+      // --- TEXTURE MEMÓRIA JAVÍTÁS (Canvas Cache & Szabadítás) ---
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
         if (this.textureCache[id]) return this.textureCache[id];
-        const size = 512; const cvs = document.createElement('canvas'); cvs.width = size; cvs.height = size;
+
+        const size = 256; // MOBILON KRITIKUS: felezzük a felbontást
+        const cvs = document.createElement('canvas'); 
+        cvs.width = size; cvs.height = size;
         const ctx = cvs.getContext('2d')!;
 
         if (isTile) {
@@ -388,21 +406,30 @@ export default function WordMasterGame() {
             ctx.fillStyle = '#fceabb'; ctx.fillRect(0,0,size,size);
         } else {
             ctx.fillStyle = '#' + new THREE.Color(color!).getHexString(); ctx.fillRect(0,0,size,size);
-            ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.lineWidth = 10; ctx.strokeRect(0,0,size,size);
+            ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.lineWidth = 5; ctx.strokeRect(0,0,size,size);
         }
 
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
         
         if (isTile) {
-            ctx.fillStyle = textColor; ctx.font = 'bold 280px "Arial", sans-serif';
-            ctx.fillText(lines[0], size/2, size/2 - 25);
-            ctx.font = 'bold 80px "Arial", sans-serif'; ctx.fillText("1", size - 70, size - 70);
+            // Skálázott fontméretek a 256-os canvas-hoz
+            ctx.fillStyle = textColor; ctx.font = 'bold 140px "Arial", sans-serif';
+            ctx.fillText(lines[0], size/2, size/2 - 12);
+            ctx.font = 'bold 40px "Arial", sans-serif'; ctx.fillText("1", size - 35, size - 35);
         } else if (lines.length > 0) {
-            ctx.fillStyle = textColor; ctx.font = `900 65px "Arial", sans-serif`;
-            lines.forEach((line, i) => { ctx.fillText(line, size/2, 220 + i * 80); });
+            ctx.fillStyle = textColor; ctx.font = `900 32px "Arial", sans-serif`;
+            lines.forEach((line, i) => { ctx.fillText(line, size/2, 110 + i * 40); });
         }
-        return new THREE.CanvasTexture(cvs);
+        
+        const texture = new THREE.CanvasTexture(cvs);
+        this.textureCache[id] = texture;
+
+        // CANVAS FELSZABADÍTÁSA MEMÓRIÁBÓL
+        cvs.width = 0;
+        cvs.height = 0;
+
+        return texture;
       }
 
       initBoard() {
@@ -628,7 +655,6 @@ export default function WordMasterGame() {
             p.tile.userData.boardR = p.r;
             p.tile.userData.boardC = p.c;
             
-            // TISZTA ADAT MENTÉSE
             this.state.logicalBoard = this.state.logicalBoard.filter(lb => !(lb.r === p.r && lb.c === p.c));
             this.state.logicalBoard.push({ r: p.r, c: p.c, char: p.tile.userData.char });
 
@@ -641,11 +667,11 @@ export default function WordMasterGame() {
         return points;
       }
 
-      // KIZÁRÓLAG A TISZTA ADATOT KÜLDJÜK! Nincs böngészős optimalizálási hiba.
       getBoardSnapshot() {
         return this.state.logicalBoard;
       }
 
+      // --- JAVÍTOTT TÁBLA FRISSÍTÉS ---
       syncBoardFromFirebase(boardData: any[]) {
         this.state.logicalBoard = boardData;
         const incomingMap = new Map();
@@ -661,6 +687,7 @@ export default function WordMasterGame() {
                         if (existingTile) this.scene.remove(existingTile);
                         const newTile = this.createTileMesh(incomingChar);
                         newTile.position.set((c - 7) * 1.05, 0.18, (r - 7) * 1.05);
+                        newTile.rotation.set(0, 0, 0); // JAVÍTÁS: Alaphelyzetbe forgatás
                         newTile.userData.boardR = r;
                         newTile.userData.boardC = c;
                         this.scene.add(newTile);
@@ -692,6 +719,7 @@ export default function WordMasterGame() {
                     if(mat.color) mat.color.setHex(0xaaaaaa); 
                 });
                 mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+                mesh.rotation.set(0, 0, 0); // JAVÍTÁS: Rotáció biztosítása szellem betűnél is
                 this.scene.add(mesh);
                 this.opponentTempTiles.push(mesh);
             }
@@ -725,7 +753,6 @@ export default function WordMasterGame() {
     const gameInstance = new Game(containerRef.current, onTempPlaceSync);
     gameRef.current = gameInstance;
     
-    // TÖKÉLETES MEMÓRIA TAKARÍTÁS (Ez okozta a fantom asztalokat mobilon!)
     return () => {
         gameInstance.dispose();
         gameRef.current = null;
@@ -769,11 +796,8 @@ export default function WordMasterGame() {
 
   const completeTurn = async (word: string, placed: any[]) => {
     const pts = word.length * 10;
-    
-    // 1. Lefixáljuk a betűket a saját 3D táblánkon
     gameRef.current.finalizeTurn(placed, pts);
     
-    // 2. Kiolvassuk a TISZTA ADATOT (Amit a mobil böngésző sem tud elrontani)
     const boardSnapshot = gameRef.current.getBoardSnapshot();
     
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
@@ -783,7 +807,6 @@ export default function WordMasterGame() {
     }));
 
     try {
-        // 3. Felküldjük a Firebase-be
         await update(ref(db, `rooms/${roomId}`), { 
             currentTurn: nextTurn, 
             players: newPlayers,
@@ -804,7 +827,6 @@ export default function WordMasterGame() {
   return (
     <>
       <style jsx global>{`
-        /* MOBIL OPTIMALIZÁCIÓ */
         body { 
             margin: 0; 
             overflow: hidden; 
