@@ -85,7 +85,9 @@ export default function WordMasterGame() {
     playerNames: [] as string[]
   });
 
-  // MOBIL ZOOM LETILTÁSA
+  const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
+  const [globalTempData, setGlobalTempData] = useState<any[]>([]);
+
   useEffect(() => {
     const meta = document.createElement('meta');
     meta.name = 'viewport';
@@ -107,6 +109,19 @@ export default function WordMasterGame() {
         gameRef.current.state.isMyTurn = (activePlayerName === playerName);
     }
   }, [currentPlayer, playerName, config.playerNames]);
+
+  // Biztonságos szinkronizálás a React állapotból a 3D motorba
+  useEffect(() => {
+    if (gameRef.current && gameState === 'playing') {
+        gameRef.current.syncBoardFromFirebase(globalBoardData);
+    }
+  }, [globalBoardData, gameState]);
+
+  useEffect(() => {
+    if (gameRef.current && gameState === 'playing') {
+        gameRef.current.syncOpponentPlacements(globalTempData);
+    }
+  }, [globalTempData, gameState]);
 
   // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
@@ -154,46 +169,38 @@ export default function WordMasterGame() {
     }
   };
 
-  // --- A JAVÍTOTT, KÖZVETLEN SZINKRONIZÁLÓ ---
   const listenToRoom = (id: string) => {
     const roomRef = ref(db, `rooms/${id}`);
     onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
-      if (!data) return;
+      if (data) {
+        const playersData = data.players || [];
+        const names = playersData.map((p: any) => p.name);
+        const syncedScores = playersData.map((p: any) => p.score || 0);
 
-      const playersData = data.players || [];
-      const names = playersData.map((p: any) => p.name);
-      const syncedScores = playersData.map((p: any) => p.score || 0);
+        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+        setScores(syncedScores);
+        setCurrentPlayer(data.currentTurn || 0);
 
-      setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-      setScores(syncedScores);
-      setCurrentPlayer(data.currentTurn || 0);
+        if (data.boardData) {
+            const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+            setGlobalBoardData(parsedBoard);
+        }
 
-      // KÖZVETLENÜL A 3D MOTORNAK ADJUK ÁT AZ ADATOT (Nincs több React késés!)
-      if (gameRef.current && data.status === 'playing') {
-          if (data.boardData) {
-              const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-              gameRef.current.syncBoardFromFirebase(parsedBoard);
-          }
-          if (data.tempPlacements) {
-              const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
-              gameRef.current.syncOpponentPlacements(parsedTemp);
-          }
-      }
-      
-      if (data.status === 'playing' && gameState !== 'playing') {
-          setGameState('playing');
-          setTimeout(() => {
-              if(gameRef.current) {
-                  gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                  gameRef.current.transitionToGameView();
-                  // Biztonsági újra-szinkronizálás a kamera animáció után
-                  if (data.boardData) {
-                      const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-                      gameRef.current.syncBoardFromFirebase(parsedBoard);
-                  }
-              }
-          }, 100);
+        if (data.tempPlacements) {
+            const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
+            setGlobalTempData(parsedTemp);
+        }
+        
+        if (data.status === 'playing' && gameState !== 'playing') {
+            setGameState('playing');
+            setTimeout(() => {
+                if(gameRef.current) {
+                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                    gameRef.current.transitionToGameView();
+                }
+            }, 100);
+        }
       }
     });
   };
@@ -219,7 +226,7 @@ export default function WordMasterGame() {
 
   // --- 3D GAME ENGINE ---
   useEffect(() => {
-    if (!containerRef.current || gameRef.current) return;
+    if (!containerRef.current) return;
 
     class Game {
       scene: any; camera: any; renderer: any; controls: any; raycaster: any; mouse: any; dragPlane: any;
@@ -234,6 +241,7 @@ export default function WordMasterGame() {
       state = {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
+        logicalBoard: [] as {r: number, c: number, char: string}[], // AZ ÚJ TISZTA ADAT RENDSZER
         placedThisTurn: [] as any[],
         turnCount: 0,
         isMyTurn: false
@@ -478,7 +486,7 @@ export default function WordMasterGame() {
             const hitTile = hits.find((i:any)=>i.object.userData.isTile);
             if(hitTile) {
                 const t = hitTile.object;
-                const fixed = this.state.boardGrid.some(r=>r.includes(t)) && !this.state.placedThisTurn.some(p=>p.tile===t);
+                const fixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
                 
                 if(!fixed) {
                     if (e.cancelable) e.preventDefault(); 
@@ -545,7 +553,7 @@ export default function WordMasterGame() {
       }
 
       placeTileToGrid(tile: any, r: number, c: number) {
-        const fixed = this.state.boardGrid[r][c]!==null;
+        const fixed = this.state.logicalBoard.some(lb => lb.r === r && lb.c === c);
         const current = this.state.placedThisTurn.some(p=>p.r===r && p.c===c && p.tile!==tile);
         if(!fixed && !current) {
             gsap.to(tile.position, {x:(c-7)*1.05, y:0.18, z:(r-7)*1.05, duration:0.4, ease:"back.out(1.5)"});
@@ -580,16 +588,16 @@ export default function WordMasterGame() {
             const r = placed[0].r;
             placed.sort((a,b) => a.c - b.c); 
             let startC = placed[0].c;
-            while(startC > 0 && this.state.boardGrid[r][startC - 1] !== null) startC--;
+            while(startC > 0 && (this.state.boardGrid[r][startC - 1] !== null || this.state.logicalBoard.some(lb => lb.r === r && lb.c === startC - 1))) startC--;
             let endC = placed[placed.length-1].c;
-            while(endC < 14 && this.state.boardGrid[r][endC + 1] !== null) endC++;
+            while(endC < 14 && (this.state.boardGrid[r][endC + 1] !== null || this.state.logicalBoard.some(lb => lb.r === r && lb.c === endC + 1))) endC++;
 
             for(let c = startC; c <= endC; c++) {
                 const pTile = placed.find(p => p.c === c);
                 if (pTile) { mainWord += pTile.tile.userData.char; }
                 else {
-                    const bTile = this.state.boardGrid[r][c];
-                    if (bTile) mainWord += bTile.userData.char;
+                    const lbTile = this.state.logicalBoard.find(lb => lb.r === r && lb.c === c);
+                    if (lbTile) mainWord += lbTile.char;
                     else return { success: false, msg: "Lyukas szó!" };
                 }
             }
@@ -597,16 +605,16 @@ export default function WordMasterGame() {
             const c = placed[0].c;
             placed.sort((a,b) => a.r - b.r); 
             let startR = placed[0].r;
-            while(startR > 0 && this.state.boardGrid[startR - 1][c] !== null) startR--;
+            while(startR > 0 && (this.state.boardGrid[startR - 1][c] !== null || this.state.logicalBoard.some(lb => lb.r === startR - 1 && lb.c === c))) startR--;
             let endR = placed[placed.length-1].r;
-            while(endR < 14 && this.state.boardGrid[endR + 1][c] !== null) endR++;
+            while(endR < 14 && (this.state.boardGrid[endR + 1][c] !== null || this.state.logicalBoard.some(lb => lb.r === endR + 1 && lb.c === c))) endR++;
 
             for(let r = startR; r <= endR; r++) {
                 const pTile = placed.find(p => p.r === r);
                 if (pTile) { mainWord += pTile.tile.userData.char; }
                 else {
-                    const bTile = this.state.boardGrid[r][c];
-                    if (bTile) mainWord += bTile.userData.char;
+                    const lbTile = this.state.logicalBoard.find(lb => lb.r === r && lb.c === c);
+                    if (lbTile) mainWord += lbTile.char;
                     else return { success: false, msg: "Lyukas szó!" };
                 }
             }
@@ -617,6 +625,13 @@ export default function WordMasterGame() {
       finalizeTurn(placed: any[], points: number) {
         placed.forEach(p => {
             this.state.boardGrid[p.r][p.c] = p.tile;
+            p.tile.userData.boardR = p.r;
+            p.tile.userData.boardC = p.c;
+            
+            // TISZTA ADAT MENTÉSE
+            this.state.logicalBoard = this.state.logicalBoard.filter(lb => !(lb.r === p.r && lb.c === p.c));
+            this.state.logicalBoard.push({ r: p.r, c: p.c, char: p.tile.userData.char });
+
             const glow = new THREE.PointLight(0x00ff00, 2, 3);
             glow.position.copy(p.tile.position); glow.position.y=1;
             this.scene.add(glow);
@@ -626,21 +641,13 @@ export default function WordMasterGame() {
         return points;
       }
 
+      // KIZÁRÓLAG A TISZTA ADATOT KÜLDJÜK! Nincs böngészős optimalizálási hiba.
       getBoardSnapshot() {
-        const data: any[] = [];
-        for(let r=0; r<15; r++) {
-            for(let c=0; c<15; c++) {
-                const tile = this.state.boardGrid[r][c];
-                if(tile && tile.userData && tile.userData.char) {
-                    data.push({ r, c, char: tile.userData.char });
-                }
-            }
-        }
-        return data;
+        return this.state.logicalBoard;
       }
 
-      // --- BRUTÁLISAN BIZTOS SZINKRONIZÁLÁS ---
       syncBoardFromFirebase(boardData: any[]) {
+        this.state.logicalBoard = boardData;
         const incomingMap = new Map();
         boardData.forEach(item => incomingMap.set(`${item.r}_${item.c}`, item.char));
 
@@ -654,6 +661,8 @@ export default function WordMasterGame() {
                         if (existingTile) this.scene.remove(existingTile);
                         const newTile = this.createTileMesh(incomingChar);
                         newTile.position.set((c - 7) * 1.05, 0.18, (r - 7) * 1.05);
+                        newTile.userData.boardR = r;
+                        newTile.userData.boardC = c;
                         this.scene.add(newTile);
                         this.state.boardGrid[r][c] = newTile;
                         newTile.userData.isPlaced = true;
@@ -675,15 +684,17 @@ export default function WordMasterGame() {
         if (this.state.isMyTurn) return; 
 
         placements.forEach(p => {
-            const mesh = this.createTileMesh(p.char);
-            mesh.material.forEach((mat: any) => { 
-                mat.transparent = true; 
-                mat.opacity = 0.5; 
-                if(mat.color) mat.color.setHex(0xaaaaaa); 
-            });
-            mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
-            this.scene.add(mesh);
-            this.opponentTempTiles.push(mesh);
+            if (!this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c)) {
+                const mesh = this.createTileMesh(p.char);
+                mesh.material.forEach((mat: any) => { 
+                    mat.transparent = true; 
+                    mat.opacity = 0.5; 
+                    if(mat.color) mat.color.setHex(0xaaaaaa); 
+                });
+                mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+                this.scene.add(mesh);
+                this.opponentTempTiles.push(mesh);
+            }
         });
       }
 
@@ -713,10 +724,15 @@ export default function WordMasterGame() {
 
     const gameInstance = new Game(containerRef.current, onTempPlaceSync);
     gameRef.current = gameInstance;
-    return () => gameInstance.dispose();
+    
+    // TÖKÉLETES MEMÓRIA TAKARÍTÁS (Ez okozta a fantom asztalokat mobilon!)
+    return () => {
+        gameInstance.dispose();
+        gameRef.current = null;
+    };
   }, []);
 
-  // --- LERAKÁS ÉS API (JAVÍTOTT VÉGLEGESÍTÉSSEL) ---
+  // --- LERAKÁS ÉS API ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
@@ -757,7 +773,7 @@ export default function WordMasterGame() {
     // 1. Lefixáljuk a betűket a saját 3D táblánkon
     gameRef.current.finalizeTurn(placed, pts);
     
-    // 2. Kiolvassuk a TÖKÉLETESEN frissített táblát
+    // 2. Kiolvassuk a TISZTA ADATOT (Amit a mobil böngésző sem tud elrontani)
     const boardSnapshot = gameRef.current.getBoardSnapshot();
     
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
@@ -767,7 +783,7 @@ export default function WordMasterGame() {
     }));
 
     try {
-        // 3. Felküldjük a Firebase-be (Ezt a Laptop azonnal le fogja reagálni!)
+        // 3. Felküldjük a Firebase-be
         await update(ref(db, `rooms/${roomId}`), { 
             currentTurn: nextTurn, 
             players: newPlayers,
@@ -780,7 +796,7 @@ export default function WordMasterGame() {
     }
     
     setTimeout(() => { 
-        gameRef.current.fillRack(); 
+        if (gameRef.current) gameRef.current.fillRack(); 
         setValidating(false); 
     }, 800);
   };
