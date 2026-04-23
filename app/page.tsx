@@ -68,47 +68,27 @@ export default function WordMasterGame() {
   const gameRef = useRef(null);
   
   // UI State
-const [gameState, setGameState] = useState('menu');
-const [scores, setScores] = useState([]);
-const [currentPlayer, setCurrentPlayer] = useState(0);
-const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
-const [validating, setValidating] = useState(false);
-const [popupData, setPopupData] = useState(null);
+  const [gameState, setGameState] = useState('menu');
+  const [scores, setScores] = useState([]);
+  const [currentPlayer, setCurrentPlayer] = useState(0);
+  const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
+  const [validating, setValidating] = useState(false);
+  const [popupData, setPopupData] = useState(null);
+  
+  // --- ÚJ MULTIPLAYER VÁLTOZÓK IDE JÖNNEK ---
+  const [roomId, setRoomId] = useState(''); 
+  const [playerName, setPlayerName] = useState(''); 
+  const [isHost, setIsHost] = useState(false); 
+  const [roomCodeInput, setRoomCodeInput] = useState(''); 
+  
+  // Config
+  const [config, setConfig] = useState({
+    theme: 'luxus',
+    boardType: 'normal',
+    playerNames: ['Anna', 'Béla']
+  });
 
-// --- ÚJ MULTIPLAYER VÁLTOZÓK IDE JÖNNEK ---
-const [roomId, setRoomId] = useState(''); // Ez tárolja az ABCD kódot
-const [playerName, setPlayerName] = useState(''); // A te saját neved
-const [isHost, setIsHost] = useState(false); // Te vagy a szoba főnöke?
-const [roomCodeInput, setRoomCodeInput] = useState(''); // Ide írod be, ha csatlakozol
-
-// Config
-const [config, setConfig] = useState({
-  // --- JÁTÉK LOGIKA START ---
-  const startGame = () => {
-    setScores(new Array(config.playerNames.length).fill(0));
-    setCurrentPlayer(0);
-    setGameState('playing');
-    // Kis késleltetés, hogy a DOM létrejöjjön
-    setTimeout(() => {
-        if(gameRef.current) {
-            gameRef.current.updateConfig(config); // Kényszerített frissítés indításkor
-            gameRef.current.transitionToGameView();
-        }
-    }, 100);
-  };
-
-  const backToMenu = () => {
-    setGameState('menu');
-    if(gameRef.current) gameRef.current.transitionToMenuView();
-  };
-
-  const addPlayer = () => {
-    if (config.playerNames.length < 4) setConfig({ ...config, playerNames: [...config.playerNames, `Játékos ${config.playerNames.length + 1}`] });
-  };
-  const removePlayer = () => {
-    if (config.playerNames.length > 2) setConfig({ ...config, playerNames: config.playerNames.slice(0, -1) });
-  };
-
+  
   // --- 3D GAME ENGINE ---
   useEffect(() => {
     if (!containerRef.current || gameRef.current) return;
