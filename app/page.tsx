@@ -82,7 +82,7 @@ export default function WordMasterGame() {
   const [config, setConfig] = useState({
     theme: 'luxus',
     boardType: 'normal',
-    playerNames: ['Anna', 'Béla']
+    playerNames: [] as string[]
   });
 
   const showToast = (msg: string, isError: boolean) => {
@@ -107,10 +107,11 @@ export default function WordMasterGame() {
     
     await set(roomRef, {
       status: 'lobby',
-      config: config,
+      config: { ...config, playerNames: [playerName] },
       players: [{ name: playerName, score: 0 }],
       currentTurn: 0,
-      hostName: playerName
+      hostName: playerName,
+      boardData: [] // Üres táblával indulunk
     });
 
     setRoomId(newRoomId);
@@ -152,12 +153,12 @@ export default function WordMasterGame() {
         const syncedScores = playersData.map((p: any) => p.score || 0);
 
         setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-        setScores(syncedScores);[cite: 1]
-        setCurrentPlayer(data.currentTurn || 0);[cite: 1]
+        setScores(syncedScores);
+        setCurrentPlayer(data.currentTurn || 0);
         
-        // --- ÚJ: TÁBLA FRISSÍTÉSE A TÖBBIEKNÉL ---
+        // --- TÁBLA FRISSÍTÉSE A TÖBBIEKNÉL ---
         if (data.boardData && gameRef.current) {
-            gameRef.current.syncBoardFromFirebase(data.boardData);[cite: 1]
+            gameRef.current.syncBoardFromFirebase(data.boardData);
         }
 
         if (data.status === 'playing' && gameState !== 'playing') {
@@ -180,6 +181,7 @@ export default function WordMasterGame() {
 
   const backToMenu = () => {
     setGameState('menu');
+    setRoomId('');
     if(gameRef.current) gameRef.current.transitionToMenuView();
   };
 
@@ -199,7 +201,7 @@ export default function WordMasterGame() {
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
         placedThisTurn: [] as any[],
         turnCount: 0,
-        isMyTurn: false // Itt tároljuk, hogy hozzáérhet-e a táblához
+        isMyTurn: false
       };
 
       constructor(container: HTMLElement) {
@@ -471,7 +473,7 @@ export default function WordMasterGame() {
       }
 
       onDown = (e: MouseEvent) => {
-        if (!this.state.isMyTurn) return; // HA NEM A MI KÖRÜNK VAN, LETILTJUK A KATTINTÁST!
+        if (!this.state.isMyTurn) return; 
 
         const x = (e.clientX/window.innerWidth)*2-1; const y = -(e.clientY/window.innerHeight)*2+1;
         this.mouse.set(x,y); this.raycaster.setFromCamera(this.mouse, this.camera);
@@ -599,6 +601,33 @@ export default function WordMasterGame() {
         return points;
       }
 
+      // --- 1. TÁBLA KIMENTÉSE ---
+      getBoardSnapshot() {
+        const data: any[] = [];
+        for(let r=0; r<15; r++) {
+            for(let c=0; c<15; c++) {
+                const tile = this.state.boardGrid[r][c];
+                if(tile) {
+                    data.push({ r, c, char: tile.userData.char });
+                }
+            }
+        }
+        return data;
+      }
+
+      // --- 2. TÁBLA BETÖLTÉSE A TÖBBIEKNÉL ---
+      syncBoardFromFirebase(boardData: any[]) {
+        boardData.forEach(item => {
+            if (!this.state.boardGrid[item.r][item.c]) {
+                const newTile = this.createTileMesh(item.char);
+                newTile.position.set((item.c - 7) * 1.05, 0.18, (item.r - 7) * 1.05);
+                this.scene.add(newTile);
+                this.state.boardGrid[item.r][item.c] = newTile;
+                newTile.userData.isPlaced = true;
+            }
+        });
+      }
+
       recall() { [...this.state.placedThisTurn].forEach(p => this.returnToRack(p.tile)); }
       shuffle() { this.state.rack.sort(() => Math.random() - 0.5); this.arrangeRack(); }
 
@@ -660,7 +689,7 @@ export default function WordMasterGame() {
 
   const completeTurn = async (word: string, placed: any[]) => {
     const pts = word.length * 10;
-    gameRef.current.finalizeTurn();[cite: 1]
+    gameRef.current.finalizeTurn(placed, pts);
     
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
     const newPlayers = config.playerNames.map((n, i) => ({ 
@@ -668,21 +697,21 @@ export default function WordMasterGame() {
         score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    // --- ÚJ: TÁBLA ÁLLAPOTÁNAK MENTÉSE ---
-    const boardSnapshot = gameRef.current.getBoardSnapshot();[cite: 1]
+    // TÁBLA ÁLLAPOTÁNAK MENTÉSE ÉS KÜLDÉSE
+    const boardSnapshot = gameRef.current.getBoardSnapshot();
 
     await update(ref(db, `rooms/${roomId}`), { 
         currentTurn: nextTurn, 
         players: newPlayers,
-        boardData: boardSnapshot // Ez küldi el a betűket a felhőbe
+        boardData: boardSnapshot
     });
 
     showToast(`Kész! +${pts}`, false);
-    gameRef.current.fillRack();[cite: 1]
-    setValidating(false);
-  };
-
-    setTimeout(() => { gameRef.current.fillRack(); setValidating(false); }, 800);
+    
+    setTimeout(() => { 
+        gameRef.current.fillRack(); 
+        setValidating(false); 
+    }, 800);
   };
 
   return (
