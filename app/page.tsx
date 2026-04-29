@@ -49,11 +49,13 @@ const WORD_CACHE = new Set(["ALMA", "KÖRTE", "HÁZ", "LÓ", "KÉZ", "VÍZ", "T�
 
 // HIVATALOS MAGYAR SCRABBLE KÉSZLET
 const LETTER_DEF: Record<string, {p: number, c: number}> = {
-  'A':{p:1,c:6}, 'Á':{p:1,c:4}, 'B':{p:2,c:3}, 'C':{p:5,c:1}, 'CS':{p:7,c:1}, 'D':{p:1,c:3}, 'DZ':{p:8,c:1}, 'DZS':{p:10,c:1},
-  'E':{p:1,c:6}, 'É':{p:3,c:3}, 'F':{p:4,c:2}, 'G':{p:2,c:3}, 'GY':{p:4,c:2}, 'H':{p:3,c:2}, 'I':{p:1,c:3}, 'Í':{p:5,c:1},
-  'J':{p:4,c:2}, 'K':{p:1,c:6}, 'L':{p:1,c:4}, 'LY':{p:8,c:1}, 'M':{p:1,c:3}, 'N':{p:1,c:4}, 'NY':{p:5,c:1}, 'O':{p:1,c:3},
-  'Ó':{p:2,c:3}, 'Ö':{p:4,c:2}, 'Ő':{p:7,c:1}, 'P':{p:4,c:2}, 'R':{p:1,c:4}, 'S':{p:1,c:3}, 'SZ':{p:3,c:2}, 'T':{p:1,c:5},
-  'TY':{p:10,c:1}, 'U':{p:4,c:2}, 'Ú':{p:7,c:1}, 'Ü':{p:4,c:2}, 'Ű':{p:7,c:1}, 'V':{p:3,c:2}, 'Z':{p:4,c:2}, 'ZS':{p:8,c:1}
+  'A': {p:1, c:6}, 'Á': {p:1, c:4}, 'B': {p:2, c:3}, 'C': {p:5, c:1}, 'CS': {p:7, c:1}, 'D': {p:2, c:3}, 
+  'E': {p:1, c:6}, 'É': {p:3, c:3}, 'F': {p:4, c:2}, 'G': {p:2, c:3}, 'GY': {p:4, c:2}, 'H': {p:3, c:2}, 
+  'I': {p:1, c:3}, 'Í': {p:5, c:1}, 'J': {p:4, c:2}, 'K': {p:1, c:6}, 'L': {p:1, c:4}, 'LY': {p:8, c:1}, 
+  'M': {p:1, c:3}, 'N': {p:1, c:4}, 'NY': {p:5, c:1}, 'O': {p:1, c:3}, 'Ó': {p:2, c:3}, 'Ö': {p:4, c:2}, 
+  'Ő': {p:7, c:1}, 'P': {p:4, c:2}, 'R': {p:1, c:4}, 'S': {p:1, c:3}, 'SZ': {p:3, c:2}, 'T': {p:1, c:5}, 
+  'TY': {p:10, c:1}, 'U': {p:4, c:2}, 'Ú': {p:7, c:1}, 'Ü': {p:4, c:2}, 'Ű': {p:7, c:1}, 'V': {p:3, c:2}, 
+  'Z': {p:4, c:2}, 'ZS': {p:8, c:1}
 };
 
 async function checkHungarianWordAPI(word: string) {
@@ -132,14 +134,10 @@ export default function WordMasterGame() {
     }
   }, [globalTempData, gameState]);
 
-  // Állapot frissítés: ha van új betűm, a 3D rackbe teszem
+  // VÉGLEGES MEGOLDÁS A KLÓNOZÁS ELLEN: Csak akkor szinkronizálunk, ha a Firebase új betűket küld
   useEffect(() => {
-    if (gameRef.current && gameState === 'playing') {
-        const currentRackSize = gameRef.current.state.rack.length;
-        if (currentRackSize < myRack.length) {
-            const charsToAdd = myRack.slice(currentRackSize);
-            gameRef.current.fillRack(charsToAdd);
-        }
+    if (gameRef.current && gameState === 'playing' && myRack.length > 0) {
+        gameRef.current.syncRack(myRack);
     }
   }, [myRack, gameState]);
 
@@ -277,7 +275,7 @@ export default function WordMasterGame() {
 
     class Game {
       scene: any; camera: any; renderer: any; controls: any; raycaster: any; mouse: any; dragPlane: any;
-      dragging: any = null; selectedTile: any = null; hasDragged: boolean = false; textureCache: any = {};
+      dragging: any = null; selectedTile: any = null; textureCache: any = {};
       woodTexture: any = null; tableTexture: any = null;
       activeTheme: any = THEMES['luxus'];
       currentBoardType: string = 'normal';
@@ -487,16 +485,33 @@ export default function WordMasterGame() {
         return mesh;
       }
       
-      fillRack(newChars: string[] = []) {
-        newChars.forEach(char => {
-            if(this.state.rack.length >= 7) return;
-            const tile = this.createTileMesh(char);
-            tile.position.set(0, 8, 15);
-            this.scene.add(tile);
-            this.state.rack.push(tile);
-            tile.userData.isPlaced = false;
-        });
-        this.arrangeRack();
+      // ÚJ, GOLYÓÁLLÓ RACK SZINKRONIZÁCIÓ
+      syncRack(serverRack: string[]) {
+        // Ha épp mi jövünk, és elkezdtünk letenni betűket, nem engedjük, hogy a React felülírja a rackünket!
+        if (this.state.isMyTurn && this.state.placedThisTurn.length > 0) return;
+
+        // Összehasonlítjuk a nálunk lévő betűket a szerverrel
+        const localTiles = [...this.state.rack.map(t => t.userData.char), ...this.state.placedThisTurn.map(p => p.tile.userData.char)];
+        const localSorted = localTiles.sort().join('');
+        const serverSorted = [...serverRack].sort().join('');
+
+        // Csak akkor generálunk újra mindent, ha valós eltérés van (pl. új kört kezdtünk)
+        if (localSorted !== serverSorted) {
+            this.state.rack.forEach(t => this.scene.remove(t));
+            this.state.placedThisTurn.forEach(p => this.scene.remove(p.tile));
+            
+            this.state.rack = [];
+            this.state.placedThisTurn = [];
+            
+            serverRack.forEach(char => {
+                const tile = this.createTileMesh(char);
+                tile.position.set(0, 8, 15);
+                this.scene.add(tile);
+                this.state.rack.push(tile);
+                tile.userData.isPlaced = false;
+            });
+            this.arrangeRack();
+        }
       }
 
       arrangeRack() {
@@ -518,26 +533,48 @@ export default function WordMasterGame() {
         }
       }
 
+      // JAVÍTOTT, PROFI MOBIL IRÁNYÍTÁS (Deadzone + Érintés logika szétválasztása)
       addEvents() {
         const el = this.renderer.domElement;
         el.style.touchAction = 'none';
 
+        let pointerDownPos = { x: 0, y: 0 };
+        let isDragging = false;
+
         const onPointerDown = (e: PointerEvent) => {
             if (!this.state.isMyTurn) return; 
-            this.hasDragged = false;
             
+            pointerDownPos = { x: e.clientX, y: e.clientY };
+            isDragging = false;
+
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
             this.raycaster.setFromCamera(this.mouse, this.camera);
             const hits = this.raycaster.intersectObjects(this.scene.children, true);
             
+            // 1. Tiszta Tap-to-Place logika
+            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
+            if(hitSlot && this.selectedTile) {
+                // Biztosítjuk, hogy ne a betűre böktünk rá újra
+                const hitTileFirst = hits[0]?.object?.userData?.isTile;
+                if (!hitTileFirst) {
+                    if (e.cancelable) e.preventDefault();
+                    const r = hitSlot.object.userData.r; 
+                    const c = hitSlot.object.userData.c;
+                    this.placeTileToGrid(this.selectedTile, r, c);
+                    this.selectedTile = null;
+                    return; 
+                }
+            }
+
+            // 2. Betű megfogása / kijelölése
             const hitTile = hits.find((i:any)=>i.object.userData.isTile);
             if(hitTile) {
                 const t = hitTile.object;
-                const fixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
+                const isFixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
                 
-                if(!fixed) {
+                if(!isFixed) {
                     if (e.cancelable) e.preventDefault(); 
                     
                     if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) {
@@ -546,20 +583,16 @@ export default function WordMasterGame() {
                     this.dragging = t; 
                     this.selectedTile = t; 
                     this.controls.enabled = false; 
+                    
+                    gsap.killTweensOf(t.position);
+                    gsap.killTweensOf(t.rotation);
                     gsap.to(t.position, {y:3, duration:0.2}); 
                     gsap.to(t.rotation, {x:0, z:0, duration:0.2});
                 }
                 return;
             }
 
-            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
-            if(hitSlot && this.selectedTile) {
-                if (e.cancelable) e.preventDefault();
-                const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
-                this.placeTileToGrid(this.selectedTile, r, c);
-                this.selectedTile = null;
-            }
-
+            // 3. Ha melléböktünk mindennek
             if(!hitTile && !hitSlot && this.selectedTile) {
                 this.returnToRack(this.selectedTile); 
                 this.selectedTile = null;
@@ -569,32 +602,44 @@ export default function WordMasterGame() {
         const onPointerMove = (e: PointerEvent) => {
             if(!this.dragging || !this.state.isMyTurn) return;
             if (e.cancelable) e.preventDefault(); 
-            this.hasDragged = true;
             
-            const rect = el.getBoundingClientRect();
-            this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            const dx = e.clientX - pointerDownPos.x;
+            const dy = e.clientY - pointerDownPos.y;
             
-            // Fat-finger y-offset a kényelmes mobil használathoz (kb. 60px eltolás felfelé)
-            const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-            const offsetY = isTouch ? 60 : 0;
-            const pointerY = e.clientY - offsetY;
-            
-            this.mouse.y = -((pointerY - rect.top) / rect.height) * 2 + 1;
-            
-            this.raycaster.setFromCamera(this.mouse, this.camera);
-            const target = new THREE.Vector3();
-            this.raycaster.ray.intersectPlane(this.dragPlane, target);
-            if(target) {
-                this.dragging.position.x = target.x;
-                this.dragging.position.z = target.z;
+            // Holt zóna: Ha 5 pixelt mozdult az ujj, akkor drag-nek számít, különben csak koppintás!
+            if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                isDragging = true;
+            }
+
+            if (isDragging) {
+                const rect = el.getBoundingClientRect();
+                this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                
+                // Fat-finger logika
+                const isTouch = e.pointerType === 'touch' || navigator.maxTouchPoints > 0;
+                const offsetY = isTouch ? 60 : 0;
+                
+                this.mouse.y = -((e.clientY - offsetY - rect.top) / rect.height) * 2 + 1;
+                
+                this.raycaster.setFromCamera(this.mouse, this.camera);
+                const target = new THREE.Vector3();
+                this.raycaster.ray.intersectPlane(this.dragPlane, target);
+                if(target) {
+                    this.dragging.position.x = target.x;
+                    this.dragging.position.z = target.z;
+                }
             }
         };
 
         const onPointerUp = () => {
-            if(!this.dragging || !this.state.isMyTurn) return;
+            if(!this.dragging || !this.state.isMyTurn) {
+                this.controls.enabled = true; 
+                return;
+            }
             
-            if (this.hasDragged) {
-                const gx = Math.round(this.dragging.position.x/1.05); const gz = Math.round(this.dragging.position.z/1.05);
+            if (isDragging) {
+                const gx = Math.round(this.dragging.position.x/1.05); 
+                const gz = Math.round(this.dragging.position.z/1.05);
                 if(Math.abs(gx)<=7 && Math.abs(gz)<=7) {
                     this.placeTileToGrid(this.dragging, gz+7, gx+7);
                     this.selectedTile = null;
@@ -605,6 +650,7 @@ export default function WordMasterGame() {
             }
             
             this.dragging = null; 
+            isDragging = false;
             this.controls.enabled = true; 
         };
 
@@ -619,7 +665,11 @@ export default function WordMasterGame() {
         const fixed = this.state.logicalBoard.some(lb => lb.r === r && lb.c === c);
         const current = this.state.placedThisTurn.some(p=>p.r===r && p.c===c && p.tile!==tile);
         if(!fixed && !current) {
+            gsap.killTweensOf(tile.position);
+            gsap.killTweensOf(tile.rotation);
             gsap.to(tile.position, {x:(c-7)*1.05, y:0.18, z:(r-7)*1.05, duration:0.4, ease:"back.out(1.5)"});
+            gsap.to(tile.rotation, {x:0, y:0, z:0, duration:0.4});
+            
             const idx = this.state.rack.indexOf(tile); if(idx>-1) this.state.rack.splice(idx,1);
             this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
             this.state.placedThisTurn.push({tile, r, c});
@@ -699,12 +749,10 @@ export default function WordMasterGame() {
             return { word, points: wordPoints * wordMult };
         };
 
-        // Fő szó olvasása
         const first = placed[0];
         const mainWordObj = getFullWord(first.r, first.c, align) || { word: first.tile.userData.char, points: LETTER_DEF[first.tile.userData.char]?.p || 1 };
         if (mainWordObj.word.length > 1) words.push(mainWordObj);
 
-        // Keresztbe kialakult szavak olvasása
         placed.forEach(p => {
             const crossDir = align === 'H' ? 'V' : 'H';
             const crossWordObj = getFullWord(p.r, p.c, crossDir);
@@ -716,7 +764,6 @@ export default function WordMasterGame() {
             return { success: false, msg: "Nem érintkezik más szavakkal!" };
         }
 
-        // Kapcsolódási és elhelyezési validáció
         if (this.state.logicalBoard.length === 0) {
             if (!placed.some(p => p.r === 7 && p.c === 7)) return { success: false, msg: "Az első szónak középre kell kerülnie!" };
         } else {
@@ -730,7 +777,6 @@ export default function WordMasterGame() {
             if (!connects) return { success: false, msg: "A szónak kapcsolódnia kell a meglévő betűkhöz!" };
         }
 
-        // Lyukak ellenőrzése
         if (placed.length > 1) {
             const rArr = placed.map(p=>p.r);
             const cArr = placed.map(p=>p.c);
@@ -918,14 +964,15 @@ export default function WordMasterGame() {
         score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
     }));
 
-    // Zsák kezelése (húzás)
-    const needed = 7 - gameRef.current.state.rack.length;
+    // Húzás a zsákból, pontosan annyit, amennyit letettünk
+    const needed = placed.length;
     let newBag = [...globalLetterBag];
     let newlyDrawn: string[] = [];
     if (needed > 0 && newBag.length > 0) {
         newlyDrawn = newBag.splice(0, needed);
     }
 
+    // A JÖVŐBELI BIZTONSÁGOS RACK-ünk
     const currentRackChars = gameRef.current.state.rack.map((t:any) => t.userData.char);
     const nextRack = [...currentRackChars, ...newlyDrawn];
 
