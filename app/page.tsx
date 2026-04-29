@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { db } from '../firebase'; 
+import { db } from '../firebase';
 import { ref, set, onValue, get, update } from 'firebase/database';
 import gsap from 'gsap';
 
@@ -58,27 +58,28 @@ async function checkHungarianWordAPI(word: string) {
     const exists = Object.keys(data.query.pages)[0] !== "-1";
     if (exists) WORD_CACHE.add(cleanWord);
     return exists;
-  } catch (error) { return false; } 
+  } catch (error) { return false; }
 }
 
 export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   const roomIdRef = useRef<string>('');
-  
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
   const [validating, setValidating] = useState(false);
-  const [popupData, setPopupData] = useState<any>(null); 
-  
+  const [popupData, setPopupData] = useState<any>(null);
+
   const [roomId, setRoomId] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [isHost, setIsHost] = useState(false);
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  
+
   const [config, setConfig] = useState({
     theme: 'luxus',
     boardType: 'normal',
@@ -87,9 +88,6 @@ export default function WordMasterGame() {
 
   const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
   const [globalTempData, setGlobalTempData] = useState<any[]>([]);
-
-  // Stabilitási flag a felesleges Canvas renderelések megakadályozására
-  const prevBoardRef = useRef<string>('');
 
   useEffect(() => {
     const meta = document.createElement('meta');
@@ -113,37 +111,37 @@ export default function WordMasterGame() {
     }
   }, [currentPlayer, playerName, config.playerNames]);
 
-  // --- AZ OPTIMALIZÁLT SZINKRONIZÁTOR ---
+  // --- OPTIMALIZÁLT SZINKRONIZÁTOR - AZONNAL FRISSÍT ---
   useEffect(() => {
-    if (gameState !== 'playing') return;
-    
-    const serialized = JSON.stringify(globalBoardData);
-    if (serialized === prevBoardRef.current) return; // ← Semmi nem változott, skippeljük!
-    prevBoardRef.current = serialized;
-    
-    const trySync = () => {
-        if (gameRef.current) {
-            gameRef.current.syncBoardFromFirebase(globalBoardData);
-        } else {
-            setTimeout(trySync, 200);
-        }
+    if (gameState !== 'playing' || !gameRef.current) return;
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+
+    syncTimeoutRef.current = setTimeout(() => {
+      if (gameRef.current && globalBoardData.length > 0) {
+        gameRef.current.syncBoardFromFirebase(globalBoardData);
+      }
+    }, 50); // Gyors szinkronizáció
+
+    return () => {
+      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
     };
-    trySync();
   }, [globalBoardData, gameState]);
 
+  // --- SZELLEM BETŰK SZINKRONIZÁLÁSA (FOLYAMATOS) ---
   useEffect(() => {
     if (gameRef.current && gameState === 'playing') {
-        gameRef.current.syncOpponentPlacements(globalTempData);
+      gameRef.current.syncOpponentPlacements(globalTempData);
     }
   }, [globalTempData, gameState]);
 
   // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
-    
+
     const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
     const roomRef = ref(db, `rooms/${newRoomId}`);
-    
+
     await set(roomRef, {
       status: 'lobby',
       config: { ...config, playerNames: [playerName] },
@@ -151,7 +149,8 @@ export default function WordMasterGame() {
       currentTurn: 0,
       hostName: playerName,
       boardData: JSON.stringify([]),
-      tempPlacements: JSON.stringify([]) 
+      tempPlacements: JSON.stringify([]),
+      lastUpdate: Date.now()
     });
 
     setRoomId(newRoomId);
@@ -169,12 +168,15 @@ export default function WordMasterGame() {
     if (snapshot.exists()) {
       const roomData = snapshot.val();
       if (roomData.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
-      
+
       const currentPlayers = roomData.players || [];
       if (currentPlayers.length >= 4) return showToast('A szoba megtelt!', true);
 
       const updatedPlayers = [...currentPlayers, { name: playerName, score: 0 }];
-      await update(roomRef, { players: updatedPlayers });
+      await update(roomRef, {
+        players: updatedPlayers,
+        lastUpdate: Date.now()
+      });
 
       setRoomId(roomCodeInput);
       listenToRoom(roomCodeInput);
@@ -196,16 +198,18 @@ export default function WordMasterGame() {
         setScores(syncedScores);
         setCurrentPlayer(data.currentTurn || 0);
 
+        // Tábla adatok szinkronizálása
         if (data.boardData) {
             const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-            setGlobalBoardData(parsedBoard);
+            setGlobalBoardData(parsedBoard || []);
         }
 
+        // Szellem betűk szinkronizálása (ellenfél lépése)
         if (data.tempPlacements) {
             const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
-            setGlobalTempData(parsedTemp);
+            setGlobalTempData(parsedTemp || []);
         }
-        
+
         if (data.status === 'playing' && gameState !== 'playing') {
             setGameState('playing');
             setTimeout(() => {
@@ -221,7 +225,10 @@ export default function WordMasterGame() {
 
   const startMultiplayerGame = async () => {
     if (!roomId) return;
-    await update(ref(db, `rooms/${roomId}`), { status: 'playing' });
+    await update(ref(db, `rooms/${roomId}`), {
+      status: 'playing',
+      lastUpdate: Date.now()
+    });
   };
 
   const backToMenu = () => {
@@ -232,9 +239,10 @@ export default function WordMasterGame() {
 
   const onTempPlaceSync = (placements: any[]) => {
     if (roomIdRef.current) {
-      update(ref(db, `rooms/${roomIdRef.current}`), { 
-          tempPlacements: JSON.stringify(placements) 
-      });
+      update(ref(db, `rooms/${roomIdRef.current}`), {
+        tempPlacements: JSON.stringify(placements),
+        lastUpdate: Date.now()
+      }).catch(err => console.error('Sync error:', err));
     }
   };
 
@@ -250,8 +258,9 @@ export default function WordMasterGame() {
       currentBoardType: string = 'normal';
       specialMap = new Map();
       opponentTempTiles: any[] = [];
+      opponentTempMap = new Map();
       onTempPlaceCallback: (placements: any[]) => void;
-      
+
       state = {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
@@ -265,7 +274,7 @@ export default function WordMasterGame() {
         this.onTempPlaceCallback = syncCallback;
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 100);
-        this.camera.position.set(25, 15, 25); 
+        this.camera.position.set(25, 15, 25);
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -300,9 +309,9 @@ export default function WordMasterGame() {
               this.currentBoardType = newConfig.boardType;
               this.updateThemeColors();
               this.loadTextures();
-              this.createTable(); 
+              this.createTable();
               this.generateBoardLayout(this.currentBoardType);
-              this.initBoard(); 
+              this.initBoard();
           }
       }
 
@@ -314,10 +323,10 @@ export default function WordMasterGame() {
       transitionToGameView() {
         this.controls.autoRotate = false;
         this.controls.enabled = false;
-        
+
         const aspect = window.innerWidth / window.innerHeight;
-        const targetY = aspect < 1 ? 34 : 24; 
-        const targetZ = aspect < 1 ? 22 : 16; 
+        const targetY = aspect < 1 ? 34 : 24;
+        const targetZ = aspect < 1 ? 22 : 16;
 
         gsap.to(this.camera.position, {
             x: 0, y: targetY, z: targetZ, duration: 2, ease: "power3.inOut",
@@ -351,11 +360,11 @@ export default function WordMasterGame() {
         const cvs = document.createElement('canvas'); cvs.width = 1024; cvs.height = 1024;
         const ctx = cvs.getContext('2d')!;
         const grd = ctx.createRadialGradient(512, 512, 100, 512, 512, 900);
-        grd.addColorStop(0, this.activeTheme.tableParams.color1); 
-        grd.addColorStop(1, this.activeTheme.tableParams.color2); 
+        grd.addColorStop(0, this.activeTheme.tableParams.color1);
+        grd.addColorStop(1, this.activeTheme.tableParams.color2);
         ctx.fillStyle = grd; ctx.fillRect(0,0,1024,1024);
         this.tableTexture = new THREE.CanvasTexture(cvs);
-        
+
         const cvsW = document.createElement('canvas'); cvsW.width = 512; cvsW.height = 512;
         const ctxW = cvsW.getContext('2d')!;
         ctxW.fillStyle = this.activeTheme.woodColor; ctxW.fillRect(0,0,512,512);
@@ -391,20 +400,17 @@ export default function WordMasterGame() {
         return { lines:[], color: this.activeTheme.boardField };
       }
 
-      // --- TEXTURE MEMÓRIA JAVÍTÁS (Canvas Cache & Szabadítás) ---
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
-        
-        // Ha már legeneráltuk ezt a betűt (pl. "A"), azonnal visszaadjuk a Cache-ből!
+
         if (this.textureCache[id]) return this.textureCache[id];
 
-        const size = 256; 
-        const cvs = document.createElement('canvas'); 
+        const size = 256;
+        const cvs = document.createElement('canvas');
         cvs.width = size; cvs.height = size;
         const ctx = cvs.getContext('2d')!;
 
         if (isTile) {
-            const grd = ctx.createLinearGradient(0,0,size,size);
             ctx.fillStyle = '#fceabb'; ctx.fillRect(0,0,size,size);
         } else {
             ctx.fillStyle = '#' + new THREE.Color(color!).getHexString(); ctx.fillRect(0,0,size,size);
@@ -413,7 +419,7 @@ export default function WordMasterGame() {
 
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
-        
+
         if (isTile) {
             ctx.fillStyle = textColor; ctx.font = 'bold 140px "Arial", sans-serif';
             ctx.fillText(lines[0], size/2, size/2 - 12);
@@ -422,17 +428,11 @@ export default function WordMasterGame() {
             ctx.fillStyle = textColor; ctx.font = `900 32px "Arial", sans-serif`;
             lines.forEach((line, i) => { ctx.fillText(line, size/2, 110 + i * 40); });
         }
-        
+
         const texture = new THREE.CanvasTexture(cvs);
-        
-        // KÖTELEZŐ MOBILON: Megmondjuk a motornak, hogy dolgozza fel a textúrát
         texture.needsUpdate = true;
-        
         this.textureCache[id] = texture;
 
-        // KIVETTÜK A CANVAS NULLÁZÁSÁT! A memóriát a textureCache védi meg, 
-        // mert így egy "A" betűt csak egyszer generálunk le az egész játék alatt.
-        
         return texture;
       }
 
@@ -469,7 +469,7 @@ export default function WordMasterGame() {
         mesh.castShadow = true; mesh.userData = { isTile: true, char: char };
         return mesh;
       }
-      
+
       fillRack() {
         while(this.state.rack.length < 7) {
             const char = HUNGARIAN_LETTERS[Math.floor(Math.random() * HUNGARIAN_LETTERS.length)];
@@ -483,7 +483,7 @@ export default function WordMasterGame() {
       }
 
       arrangeRack() {
-        const spacing = window.innerWidth < 600 ? 0.95 : 1.1; 
+        const spacing = window.innerWidth < 600 ? 0.95 : 1.1;
         this.state.rack.forEach((tile, i) => {
             if(tile.userData.isPlaced) return;
             const x = (i - (this.state.rack.length-1)/2) * spacing;
@@ -506,29 +506,29 @@ export default function WordMasterGame() {
         el.style.touchAction = 'none';
 
         const onPointerDown = (e: PointerEvent) => {
-            if (!this.state.isMyTurn) return; 
-            
+            if (!this.state.isMyTurn) return;
+
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
             this.raycaster.setFromCamera(this.mouse, this.camera);
             const hits = this.raycaster.intersectObjects(this.scene.children, true);
-            
+
             const hitTile = hits.find((i:any)=>i.object.userData.isTile);
             if(hitTile) {
                 const t = hitTile.object;
                 const fixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
-                
+
                 if(!fixed) {
-                    if (e.cancelable) e.preventDefault(); 
-                    
+                    if (e.cancelable) e.preventDefault();
+
                     if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) {
-                        gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
+                        gsap.to(this.selectedTile.position, {y:1.2, duration:0.2});
                     }
-                    this.dragging = t; 
-                    this.selectedTile = t; 
-                    this.controls.enabled = false; 
-                    gsap.to(t.position, {y:3, duration:0.2}); 
+                    this.dragging = t;
+                    this.selectedTile = t;
+                    this.controls.enabled = false;
+                    gsap.to(t.position, {y:3, duration:0.2});
                     gsap.to(t.rotation, {x:0, z:0, duration:0.2});
                 }
                 return;
@@ -541,15 +541,15 @@ export default function WordMasterGame() {
                 this.selectedTile = null;
             }
             if(!hitTile && !hitSlot && this.selectedTile) {
-                this.returnToRack(this.selectedTile); 
+                this.returnToRack(this.selectedTile);
                 this.selectedTile = null;
             }
         };
 
         const onPointerMove = (e: PointerEvent) => {
             if(!this.dragging || !this.state.isMyTurn) return;
-            if (e.cancelable) e.preventDefault(); 
-            
+            if (e.cancelable) e.preventDefault();
+
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -572,14 +572,14 @@ export default function WordMasterGame() {
                 this.returnToRack(this.dragging);
                 this.selectedTile = null;
             }
-            this.dragging = null; 
-            this.controls.enabled = true; 
+            this.dragging = null;
+            this.controls.enabled = true;
         };
 
         el.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
         window.addEventListener('pointerup', onPointerUp);
-        window.addEventListener('pointercancel', onPointerUp); 
+        window.addEventListener('pointercancel', onPointerUp);
         window.addEventListener('resize', this.onResize);
       }
 
@@ -592,7 +592,7 @@ export default function WordMasterGame() {
             this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
             this.state.placedThisTurn.push({tile, r, c});
             tile.userData.isPlaced = true;
-            this.triggerTempSync(); 
+            this.triggerTempSync();
         } else this.returnToRack(tile);
       }
 
@@ -600,7 +600,7 @@ export default function WordMasterGame() {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
         tile.userData.isPlaced=false; this.arrangeRack();
-        this.triggerTempSync(); 
+        this.triggerTempSync();
       }
 
       async validateTurn() {
@@ -617,7 +617,7 @@ export default function WordMasterGame() {
 
         if (isHoriz) {
             const r = placed[0].r;
-            placed.sort((a,b) => a.c - b.c); 
+            placed.sort((a,b) => a.c - b.c);
             let startC = placed[0].c;
             while(startC > 0 && (this.state.boardGrid[r][startC - 1] !== null || this.state.logicalBoard.some(lb => lb.r === r && lb.c === startC - 1))) startC--;
             let endC = placed[placed.length-1].c;
@@ -632,9 +632,9 @@ export default function WordMasterGame() {
                     else return { success: false, msg: "Lyukas szó!" };
                 }
             }
-        } else { 
+        } else {
             const c = placed[0].c;
-            placed.sort((a,b) => a.r - b.r); 
+            placed.sort((a,b) => a.r - b.r);
             let startR = placed[0].r;
             while(startR > 0 && (this.state.boardGrid[startR - 1][c] !== null || this.state.logicalBoard.some(lb => lb.r === startR - 1 && lb.c === c))) startR--;
             let endR = placed[placed.length-1].r;
@@ -658,7 +658,7 @@ export default function WordMasterGame() {
             this.state.boardGrid[p.r][p.c] = p.tile;
             p.tile.userData.boardR = p.r;
             p.tile.userData.boardC = p.c;
-            
+
             this.state.logicalBoard = this.state.logicalBoard.filter(lb => !(lb.r === p.r && lb.c === p.c));
             this.state.logicalBoard.push({ r: p.r, c: p.c, char: p.tile.userData.char });
 
@@ -675,9 +675,11 @@ export default function WordMasterGame() {
         return this.state.logicalBoard;
       }
 
-      // --- JAVÍTOTT TÁBLA FRISSÍTÉS ---
+      // --- GYORS TÁBLA FRISSÍTÉS REAL-TIME ---
       syncBoardFromFirebase(boardData: any[]) {
-        this.state.logicalBoard = boardData;
+        if (!boardData || boardData.length === 0) return;
+
+        this.state.logicalBoard = [...boardData];
         const incomingMap = new Map();
         boardData.forEach(item => incomingMap.set(`${item.r}_${item.c}`, item.char));
 
@@ -691,15 +693,15 @@ export default function WordMasterGame() {
                         if (existingTile) this.scene.remove(existingTile);
                         const newTile = this.createTileMesh(incomingChar);
                         newTile.position.set((c - 7) * 1.05, 0.18, (r - 7) * 1.05);
-                        newTile.rotation.set(0, 0, 0); // JAVÍTÁS: Alaphelyzetbe forgatás
+                        newTile.rotation.set(0, 0, 0);
                         newTile.userData.boardR = r;
                         newTile.userData.boardC = c;
+                        newTile.userData.isPlaced = true;
                         this.scene.add(newTile);
                         this.state.boardGrid[r][c] = newTile;
-                        newTile.userData.isPlaced = true;
                     }
                 } else {
-                    if (existingTile) {
+                    if (existingTile && !this.state.placedThisTurn.some(p => p.tile === existingTile)) {
                         this.scene.remove(existingTile);
                         this.state.boardGrid[r][c] = null;
                     }
@@ -708,24 +710,39 @@ export default function WordMasterGame() {
         }
       }
 
+      // --- SZELLEM BETŰK - ELLENFÉL ÉLŐBEN LÁTHATÓ MOZGÁSA ---
       syncOpponentPlacements(placements: any[]) {
-        this.opponentTempTiles.forEach((t: any) => this.scene.remove(t));
+        const newTempMap = new Map();
+        placements.forEach(p => newTempMap.set(`${p.r}_${p.c}`, p.char));
+
+        this.opponentTempTiles.forEach((tile: any) => {
+          const key = `${tile.userData.r}_${tile.userData.c}`;
+          if (!newTempMap.has(key)) {
+            this.scene.remove(tile);
+          }
+        });
+
         this.opponentTempTiles = [];
 
-        if (this.state.isMyTurn) return; 
-
         placements.forEach(p => {
-            if (!this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c)) {
-                const mesh = this.createTileMesh(p.char);
-                mesh.material.forEach((mat: any) => { 
-                    mat.transparent = true; 
-                    mat.opacity = 0.5; 
-                    if(mat.color) mat.color.setHex(0xaaaaaa); 
-                });
-                mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
-                mesh.rotation.set(0, 0, 0); // JAVÍTÁS: Rotáció biztosítása szellem betűnél is
-                this.scene.add(mesh);
-                this.opponentTempTiles.push(mesh);
+            const alreadyPlaced = this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c);
+            if (!alreadyPlaced) {
+                const existingGhost = this.opponentTempTiles.find(t => t.userData.r === p.r && t.userData.c === p.c);
+
+                if (!existingGhost) {
+                    const mesh = this.createTileMesh(p.char);
+                    mesh.userData.r = p.r;
+                    mesh.userData.c = p.c;
+                    mesh.material.forEach((mat: any) => {
+                        mat.transparent = true;
+                        mat.opacity = 0.6;
+                        if(mat.color) mat.color.setHex(0xdddddd);
+                    });
+                    mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+                    mesh.rotation.set(0, 0, 0);
+                    this.scene.add(mesh);
+                    this.opponentTempTiles.push(mesh);
+                }
             }
         });
       }
@@ -750,13 +767,13 @@ export default function WordMasterGame() {
           this.camera.aspect = window.innerWidth / window.innerHeight;
           this.camera.updateProjectionMatrix();
           this.renderer.setSize(window.innerWidth, window.innerHeight);
-          this.arrangeRack(); 
+          this.arrangeRack();
       }
     }
 
     const gameInstance = new Game(containerRef.current, onTempPlaceSync);
     gameRef.current = gameInstance;
-    
+
     return () => {
         gameInstance.dispose();
         gameRef.current = null;
@@ -767,10 +784,10 @@ export default function WordMasterGame() {
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
-    
+
     const check = await gameRef.current.validateTurn();
-    
-    if(check.success === false) { 
+
+    if(check.success === false) {
         showToast(check.msg, true);
         setValidating(false);
         return;
@@ -785,7 +802,7 @@ export default function WordMasterGame() {
         setPopupData({
             word: mainWord,
             onAccept: () => {
-                WORD_CACHE.add(mainWord); 
+                WORD_CACHE.add(mainWord);
                 completeTurn(mainWord, placed);
                 setPopupData(null);
             },
@@ -801,47 +818,48 @@ export default function WordMasterGame() {
   const completeTurn = async (word: string, placed: any[]) => {
     const pts = word.length * 10;
     gameRef.current.finalizeTurn(placed, pts);
-    
+
     const boardSnapshot = gameRef.current.getBoardSnapshot();
-    
+
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
-    const newPlayers = config.playerNames.map((n, i) => ({ 
-        name: n, 
-        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
+    const newPlayers = config.playerNames.map((n, i) => ({
+        name: n,
+        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0)
     }));
 
     try {
-        await update(ref(db, `rooms/${roomId}`), { 
-            currentTurn: nextTurn, 
+        await update(ref(db, `rooms/${roomId}`), {
+            currentTurn: nextTurn,
             players: newPlayers,
             boardData: JSON.stringify(boardSnapshot),
-            tempPlacements: JSON.stringify([]) 
+            tempPlacements: JSON.stringify([]),
+            lastUpdate: Date.now()
         });
         showToast(`Kész! +${pts}`, false);
     } catch(err) {
         showToast('Hálózati hiba!', true);
     }
-    
-    setTimeout(() => { 
-        if (gameRef.current) gameRef.current.fillRack(); 
-        setValidating(false); 
+
+    setTimeout(() => {
+        if (gameRef.current) gameRef.current.fillRack();
+        setValidating(false);
     }, 800);
   };
 
   return (
     <>
       <style jsx global>{`
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            font-family: 'Inter', sans-serif; 
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
             background: #000;
-            touch-action: none; 
+            touch-action: none;
             -webkit-user-select: none;
             user-select: none;
         }
         .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
-        
+
         .popup-overlay {
             position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
             display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 100;
@@ -852,31 +870,31 @@ export default function WordMasterGame() {
             text-align: center; color: white; box-shadow: 0 0 50px rgba(255, 204, 0, 0.3);
             width: 90%; max-width: 350px;
         }
-        
+
         .glass-panel {
             pointer-events: auto; background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 25px 20px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; 
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white;
             width: 92%; max-width: 400px; box-sizing: border-box;
         }
         .menu-title { font-size: 32px; font-weight: 900; text-align: center; margin-bottom: 20px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; }
-        
+
         .modern-btn { padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; cursor: pointer; transition: all 0.2s; font-weight: 600; font-size: 14px;}
         .modern-btn.active { background: white; color: black; border-color: white; }
         .play-btn { width: 100%; margin-top: 15px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 16px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
-        
+
         .game-header { position: absolute; top: 0; left: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 10px; width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); backdrop-filter: blur(5px); z-index: 20; }
         .player-pill { background: rgba(0,0,0,0.6); padding: 6px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
         .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
-        
+
         .bottom-bar { position: absolute; bottom: 25px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; pointer-events: none; padding: 0 10px; box-sizing: border-box; z-index: 20; }
         .action-btn { pointer-events: auto; padding: 12px 18px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 13px; backdrop-filter: blur(10px); }
         .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
         .btn-primary { background: #10b981; color: white; }
-        
+
         .toast { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 12px 20px; border-radius: 50px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 1000; text-align: center; width: max-content; max-width: 90%; }
         .toast.show { opacity: 1; }
-        
+
         .input-group { margin-bottom: 15px; }
         .input-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; margin-bottom: 5px; }
         .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
@@ -886,10 +904,10 @@ export default function WordMasterGame() {
             .menu-title { font-size: 26px; }
             .glass-panel { padding: 20px 15px; }
             .play-btn { padding: 14px; font-size: 14px; }
-            .bottom-bar { bottom: 35px; } 
+            .bottom-bar { bottom: 35px; }
         }
       `}</style>
-      
+
       <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
 
       {popupData && (
@@ -910,7 +928,7 @@ export default function WordMasterGame() {
             <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center'}}>
                 <div className="glass-panel">
                     <div className="menu-title">WORD MASTER</div>
-                    
+
                     {!roomId ? (
                       <>
                         <div className="input-group">
