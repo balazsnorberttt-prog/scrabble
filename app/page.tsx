@@ -1,5 +1,5 @@
 'use client';
-import './globals.css';
+
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -10,418 +10,340 @@ import gsap from 'gsap';
 
 // --- TÉMÁK ---
 const THEMES = {
-    luxus: {
-        name: "Royal Mahogany", isDark: true, bgBase: 0x1a1a1a, fogColor: 0x1a1a1a,
-        tableParams: { color1: '#4a2c20', color2: '#1a120b' }, woodColor: '#5d4037',
-        frameColor: 0xffffff, boardField: 0x1e5128,
-        special: { tw: 0xb91c1c, dw: 0xc084fc, tl: 0x1d4ed8, dl: 0x60a5fa, start: 0xb91c1c }
-    },
-    nordic: {
-        name: "Nordic Frost", isDark: false, bgBase: 0xd1d5db, fogColor: 0xd1d5db,
-        tableParams: { color1: '#f3f4f6', color2: '#e5e7eb' }, woodColor: '#d1d5db',
-        frameColor: 0x9ca3af, boardField: 0xffffff,
-        special: { tw: 0xfca5a5, dw: 0xfcd34d, tl: 0x93c5fd, dl: 0xc4b5fd, start: 0xfca5a5 }
-    },
-    cyber: {
-        name: "Cyberpunk Neon", isDark: true, bgBase: 0x020617, fogColor: 0x020617,
-        tableParams: { color1: '#0f172a', color2: '#000000' }, woodColor: '#1e293b',
-        frameColor: 0x334155, boardField: 0x0f172a,
-        special: { tw: 0xff0055, dw: 0xaa00ff, tl: 0x00ccff, dl: 0x00ffaa, start: 0xff0055 }
-    }
+  luxus: {
+    name: "Royal Mahogany",
+    isDark: true,
+    bgBase: 0x1a1a1a,
+    fogColor: 0x1a1a1a,
+    tableParams: { color1: '#4a2c20', color2: '#1a120b' },
+    woodColor: '#5d4037',
+    frameColor: 0xffffff,
+    boardField: 0x1e5128,
+    special: { tw: 0xb91c1c, dw: 0xc084fc, tl: 0x1d4ed8, dl: 0x60a5fa, start: 0xb91c1c }
+  },
+  nordic: {
+    name: "Nordic Frost",
+    isDark: false,
+    bgBase: 0xd1d5db,
+    fogColor: 0xd1d5db,
+    tableParams: { color1: '#f3f4f6', color2: '#e5e7eb' },
+    woodColor: '#d1d5db',
+    frameColor: 0x9ca3af,
+    boardField: 0xffffff,
+    special: { tw: 0xfca5a5, dw: 0xfcd34d, tl: 0x93c5fd, dl: 0xc4b5fd, start: 0xfca5a5 }
+  },
+  cyber: {
+    name: "Cyberpunk Neon",
+    isDark: true,
+    bgBase: 0x020617,
+    fogColor: 0x020617,
+    tableParams: { color1: '#0f172a', color2: '#000000' },
+    woodColor: '#1e293b',
+    frameColor: 0x334155,
+    boardField: 0x0f172a,
+    special: { tw: 0xff0055, dw: 0xaa00ff, tl: 0x00ccff, dl: 0x00ffaa, start: 0xff0055 }
+  }
 };
-
-// --- MAGYAR SCRABBLE BETŰKÉSZLET ÉS PONTOK ---
-const LETTER_DEF = {
-    'A': { count: 6, value: 1 }, 'E': { count: 6, value: 1 }, 'K': { count: 6, value: 1 }, 'T': { count: 5, value: 1 },
-    'Á': { count: 4, value: 1 }, 'L': { count: 4, value: 1 }, 'N': { count: 4, value: 1 }, 'R': { count: 4, value: 1 },
-    'I': { count: 3, value: 1 }, 'M': { count: 3, value: 1 }, 'O': { count: 3, value: 1 }, 'S': { count: 3, value: 1 },
-    'B': { count: 3, value: 2 }, 'D': { count: 3, value: 2 }, 'G': { count: 3, value: 2 }, 'Ó': { count: 3, value: 2 },
-    'É': { count: 3, value: 3 }, 'H': { count: 2, value: 3 }, 'V': { count: 2, value: 3 },
-    'F': { count: 2, value: 4 }, 'J': { count: 2, value: 4 }, 'Ö': { count: 2, value: 4 }, 'P': { count: 2, value: 4 },
-    'U': { count: 2, value: 4 }, 'Ü': { count: 2, value: 4 }, 'Z': { count: 2, value: 4 },
-    'C': { count: 1, value: 5 }, 'Í': { count: 1, value: 5 },
-    'Ő': { count: 1, value: 7 }, 'Ú': { count: 1, value: 7 }, 'Ű': { count: 1, value: 7 }
-};
-
-function generateInitialBag() {
-    let bag: string[] = [];
-    Object.entries(LETTER_DEF).forEach(([letter, data]) => {
-        for (let i = 0; i < data.count; i++) bag.push(letter);
-    });
-    for (let i = bag.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [bag[i], bag[j]] = [bag[j], bag[i]];
-    }
-    return bag;
-}
 
 const WORD_CACHE = new Set(["ALMA", "KÖRTE", "HÁZ", "LÓ", "KÉZ", "VÍZ", "TŰZ", "SZÓ", "JÁTÉK", "ASZTAL"]);
 
+// HIVATALOS MAGYAR SCRABBLE KÉSZLET
+const LETTER_DEF: Record<string, {p: number, c: number}> = {
+  'A':{p:1,c:6}, 'Á':{p:1,c:4}, 'B':{p:2,c:3}, 'C':{p:5,c:1}, 'CS':{p:7,c:1}, 'D':{p:1,c:3}, 'DZ':{p:8,c:1}, 'DZS':{p:10,c:1},
+  'E':{p:1,c:6}, 'É':{p:3,c:3}, 'F':{p:4,c:2}, 'G':{p:2,c:3}, 'GY':{p:4,c:2}, 'H':{p:3,c:2}, 'I':{p:1,c:3}, 'Í':{p:5,c:1},
+  'J':{p:4,c:2}, 'K':{p:1,c:6}, 'L':{p:1,c:4}, 'LY':{p:8,c:1}, 'M':{p:1,c:3}, 'N':{p:1,c:4}, 'NY':{p:5,c:1}, 'O':{p:1,c:3},
+  'Ó':{p:2,c:3}, 'Ö':{p:4,c:2}, 'Ő':{p:7,c:1}, 'P':{p:4,c:2}, 'R':{p:1,c:4}, 'S':{p:1,c:3}, 'SZ':{p:3,c:2}, 'T':{p:1,c:5},
+  'TY':{p:10,c:1}, 'U':{p:4,c:2}, 'Ú':{p:7,c:1}, 'Ü':{p:4,c:2}, 'Ű':{p:7,c:1}, 'V':{p:3,c:2}, 'Z':{p:4,c:2}, 'ZS':{p:8,c:1}
+};
+
 async function checkHungarianWordAPI(word: string) {
-    const cleanWord = word.trim().toUpperCase();
-    if (!cleanWord || cleanWord.length < 2) return false;
-    if (WORD_CACHE.has(cleanWord)) return true;
-    try {
-        const response = await fetch(`https://hu.wiktionary.org/w/api.php?action=query&titles=${encodeURIComponent(cleanWord.toLowerCase())}&format=json&origin=*`);
-        const data = await response.json();
-        const exists = Object.keys(data.query.pages)[0] !== "-1";
-        if (exists) WORD_CACHE.add(cleanWord);
-        return exists;
-    } catch (error) { return false; } 
+  const cleanWord = word.trim().toUpperCase();
+  if (!cleanWord) return false;
+  if (WORD_CACHE.has(cleanWord)) return true;
+  try {
+    const response = await fetch(`https://hu.wiktionary.org/w/api.php?action=query&titles=${encodeURIComponent(cleanWord.toLowerCase())}&format=json&origin=*`);
+    const data = await response.json();
+    const exists = Object.keys(data.query.pages)[0] !== "-1";
+    if (exists) WORD_CACHE.add(cleanWord);
+    return exists;
+  } catch (error) { return false; } 
 }
 
 export default function WordMasterGame() {
-    const containerRef = useRef<HTMLDivElement>(null);
-    const gameRef = useRef<any>(null);
-    const roomIdRef = useRef<string>('');
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gameRef = useRef<any>(null);
+  const roomIdRef = useRef<string>('');
+  
+  // --- ÁLLAPOTOK ---
+  const [gameState, setGameState] = useState('menu');
+  const [scores, setScores] = useState<number[]>([]);
+  const [currentPlayer, setCurrentPlayer] = useState(0);
+  const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
+  const [validating, setValidating] = useState(false);
+  const [popupData, setPopupData] = useState<any>(null); 
+  
+  const [roomId, setRoomId] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  const [isHost, setIsHost] = useState(false);
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  
+  const [config, setConfig] = useState({
+    theme: 'luxus',
+    boardType: 'normal',
+    playerNames: [] as string[]
+  });
 
-    const [gameState, setGameState] = useState('menu');
-    const [scores, setScores] = useState<number[]>([]);
-    const [currentPlayer, setCurrentPlayer] = useState(0);
-    const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
-    const [validating, setValidating] = useState(false);
-    
-    const [roomId, setRoomId] = useState('');
-    const [playerName, setPlayerName] = useState('');
-    const [isHost, setIsHost] = useState(false);
-    const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
+  const [globalTempData, setGlobalTempData] = useState<any[]>([]);
+  const [globalLetterBag, setGlobalLetterBag] = useState<string[]>([]);
+  const [myRack, setMyRack] = useState<string[]>([]);
 
-    const [config, setConfig] = useState({ theme: 'luxus', boardType: 'normal', playerNames: [] as string[] });
+  useEffect(() => {
+    const meta = document.createElement('meta');
+    meta.name = 'viewport';
+    meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+    document.head.appendChild(meta);
+    return () => { document.head.removeChild(meta); };
+  }, []);
 
-    const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
-    const [globalTempData, setGlobalTempData] = useState<any[]>([]);
-    const [globalLetterBag, setGlobalLetterBag] = useState<string[]>([]);
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
-    useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
+  const showToast = (msg: string, isError: boolean) => {
+    setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
+    setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
+  };
 
-    const showToast = (msg: string, isError: boolean) => {
-        setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
-        setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
-    };
+  useEffect(() => {
+    if (gameRef.current && config.playerNames.length > 0) {
+        const activePlayerName = config.playerNames[currentPlayer];
+        gameRef.current.state.isMyTurn = (activePlayerName === playerName);
+    }
+  }, [currentPlayer, playerName, config.playerNames]);
 
-    const createRoom = async () => {
-        if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
-        const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const initialBag = generateInitialBag(); 
-        
-        await set(ref(db, `rooms/${newRoomId}`), {
-            host: playerName,
-            status: 'waiting',
-            config: config,
-            currentTurn: 0,
-            letterBag: initialBag, 
-            players: [{ name: playerName, score: 0 }]
-        });
-        
-        setRoomId(newRoomId); setIsHost(true); setGameState('lobby');
-    };
+  useEffect(() => {
+    if (gameRef.current && gameState === 'playing') {
+        gameRef.current.syncBoardFromFirebase(globalBoardData);
+    }
+  }, [globalBoardData, gameState]);
 
-    const joinRoom = async () => {
-        if (!playerName.trim() || !roomCodeInput.trim()) return showToast('Név és szobakód kötelező!', true);
-        const code = roomCodeInput.trim().toUpperCase();
-        const roomRef = ref(db, `rooms/${code}`);
-        const snapshot = await get(roomRef);
-        
-        if (snapshot.exists()) {
-            const data = snapshot.val();
-            if (data.status !== 'waiting') return showToast('A játék már elkezdődött!', true);
-            const players = data.players || [];
-            if (players.length >= 4) return showToast('A szoba megtelt!', true);
-            
-            players.push({ name: playerName, score: 0 });
-            await update(roomRef, { players });
-            setRoomId(code); setIsHost(false); setGameState('lobby');
-        } else {
-            showToast('Nem létező szoba!', true);
+  useEffect(() => {
+    if (gameRef.current && gameState === 'playing') {
+        gameRef.current.syncOpponentPlacements(globalTempData);
+    }
+  }, [globalTempData, gameState]);
+
+  // Állapot frissítés: ha van új betűm, a 3D rackbe teszem
+  useEffect(() => {
+    if (gameRef.current && gameState === 'playing') {
+        const currentRackSize = gameRef.current.state.rack.length;
+        if (currentRackSize < myRack.length) {
+            const charsToAdd = myRack.slice(currentRackSize);
+            gameRef.current.fillRack(charsToAdd);
         }
-    };
+    }
+  }, [myRack, gameState]);
 
-    const startGame = async () => {
-        if (!isHost) return;
-        await update(ref(db, `rooms/${roomId}`), { status: 'playing' });
-    };
+  // --- MULTIPLAYER LOGIKA ---
+  const createRoom = async () => {
+    if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
+    
+    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const roomRef = ref(db, `rooms/${newRoomId}`);
+    
+    await set(roomRef, {
+      status: 'lobby',
+      config: { ...config, playerNames: [playerName] },
+      players: [{ name: playerName, score: 0 }],
+      currentTurn: 0,
+      hostName: playerName,
+      boardData: JSON.stringify([]),
+      tempPlacements: JSON.stringify([]) 
+    });
 
-    // Firebase Listener
-    useEffect(() => {
-        if (!roomId) return;
-        const roomRef = ref(db, `rooms/${roomId}`);
-        const unsub = onValue(roomRef, (snapshot) => {
-            const data = snapshot.val();
-            if (data) {
-                const playersData = data.players || [];
-                const names = playersData.map((p: any) => p.name);
-                const syncedScores = playersData.map((p: any) => p.score || 0);
+    setRoomId(newRoomId);
+    setIsHost(true);
+    listenToRoom(newRoomId);
+  };
 
-                setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-                setScores(syncedScores);
-                setCurrentPlayer(data.currentTurn || 0);
-                if (data.letterBag) setGlobalLetterBag(data.letterBag);
+  const joinRoom = async () => {
+    if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
+    if (roomCodeInput.length !== 4) return showToast('A kód 4 karakter hosszú!', true);
 
-                if (data.boardData && gameRef.current) {
-                    const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-                    gameRef.current.syncBoardFromFirebase(parsedBoard);
-                    setGlobalBoardData(parsedBoard);
-                }
+    const roomRef = ref(db, `rooms/${roomCodeInput}`);
+    const snapshot = await get(roomRef);
 
-                if (data.tempPlacements && gameRef.current) {
-                    const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
-                    gameRef.current.syncOpponentPlacements(parsedTemp);
-                    setGlobalTempData(parsedTemp);
-                }
-                
-                if (data.status === 'playing' && gameState !== 'playing') {
-                    setGameState('playing');
-                    setTimeout(() => {
-                        if(gameRef.current) {
-                            gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                            gameRef.current.transitionToGameView();
-                        }
-                    }, 100);
-                }
-            }
-        });
-        return () => unsub();
-    }, [roomId, gameState]);
+    if (snapshot.exists()) {
+      const roomData = snapshot.val();
+      if (roomData.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
+      
+      const currentPlayers = roomData.players || [];
+      if (currentPlayers.length >= 4) return showToast('A szoba megtelt!', true);
 
-    // --- AZONNALI 3D MOTOR INDÍTÁS A HÁTTÉRBEN (MENÜHÖZ) ---
-    useEffect(() => {
-        if (containerRef.current && !gameRef.current) {
-            gameRef.current = new GameEngine(containerRef.current, config);
-            
-            gameRef.current.onNeedsLetters = (count: number) => {
-                let currentBag = [...globalLetterBag];
-                const drawn = currentBag.splice(0, count);
-                update(ref(db, `rooms/${roomIdRef.current}`), { letterBag: currentBag });
-                return drawn;
-            };
+      const updatedPlayers = [...currentPlayers, { name: playerName, score: 0 }];
+      await update(roomRef, { players: updatedPlayers });
 
-            gameRef.current.onTempPlaceCallback = (placements: any[]) => {
-                if(roomIdRef.current) {
-                    update(ref(db, `rooms/${roomIdRef.current}`), { tempPlacements: JSON.stringify(placements) });
-                }
-            };
+      setRoomId(roomCodeInput);
+      listenToRoom(roomCodeInput);
+    } else {
+      showToast('Nem létezik ilyen szoba!', true);
+    }
+  };
+
+  const listenToRoom = (id: string) => {
+    const roomRef = ref(db, `rooms/${id}`);
+    onValue(roomRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const playersData = data.players || [];
+        const names = playersData.map((p: any) => p.name);
+        const syncedScores = playersData.map((p: any) => p.score || 0);
+
+        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+        setScores(syncedScores);
+        setCurrentPlayer(data.currentTurn || 0);
+
+        if (data.boardData) {
+            const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+            setGlobalBoardData(parsedBoard);
         }
-    }, []); // Üres array: azonnal lefut, betölt a 3D asztal a menü mögé!
 
-    // Turn Update
-    useEffect(() => {
-        if (gameRef.current && gameState === 'playing') {
-            const isMyTurnNow = config.playerNames[currentPlayer] === playerName;
-            gameRef.current.state.isMyTurn = isMyTurnNow;
-            
-            if (isMyTurnNow && gameRef.current.state.rack.length < 7) {
-                 const needed = 7 - gameRef.current.state.rack.length;
-                 const newLetters = gameRef.current.onNeedsLetters(needed);
-                 newLetters.forEach((char: string) => {
-                     const tile = gameRef.current.createTileMesh(char);
-                     gameRef.current.scene.add(tile);
-                     gameRef.current.state.rack.push(tile);
-                 });
-                 gameRef.current.arrangeRack();
-            }
+        if (data.tempPlacements) {
+            const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
+            setGlobalTempData(parsedTemp);
         }
-    }, [currentPlayer, playerName, config.playerNames]);
 
-    const handleTurnAction = async (action: 'submit' | 'pass') => {
-        if (!gameRef.current) return;
+        if (data.letterBag) {
+            setGlobalLetterBag(typeof data.letterBag === 'string' ? JSON.parse(data.letterBag) : data.letterBag);
+        }
+
+        if (data.racks) {
+            const parsedRacks = typeof data.racks === 'string' ? JSON.parse(data.racks) : data.racks;
+            setMyRack(parsedRacks[playerName] || []);
+        }
         
-        if (action === 'submit') {
-            setValidating(true);
-            const { valid, points, error } = await gameRef.current.validateTurn();
-            setValidating(false);
-
-            if (!valid) {
-                gameRef.current.recallTiles();
-                return showToast(error || 'Érvénytelen lépés!', true);
-            }
-            
-            gameRef.current.finalizeTurn();
-            
-            const boardSnapshot = gameRef.current.getBoardSnapshot();
-            const myIndex = config.playerNames.indexOf(playerName);
-            const newPlayers = [...scores].map((s, i) => ({
-                name: config.playerNames[i],
-                score: i === myIndex ? s + points : s
-            }));
-            
-            const nextTurn = (currentPlayer + 1) % config.playerNames.length;
-
-            await update(ref(db, `rooms/${roomId}`), { 
-                currentTurn: nextTurn, 
-                players: newPlayers,
-                boardData: JSON.stringify(boardSnapshot),
-                tempPlacements: []
-            });
-
-            showToast(`Szép lépés! +${points} pont`, false);
-
-        } else if (action === 'pass') {
-            gameRef.current.recallTiles();
-            const nextTurn = (currentPlayer + 1) % config.playerNames.length;
-            await update(ref(db, `rooms/${roomId}`), { currentTurn: nextTurn, tempPlacements: [] });
-            showToast('Passzoltál.', false);
+        if (data.status === 'playing' && gameState !== 'playing') {
+            setGameState('playing');
+            setTimeout(() => {
+                if(gameRef.current) {
+                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                    gameRef.current.transitionToGameView();
+                }
+            }, 100);
         }
-    };
+      }
+    });
+  };
 
-    return (
-        <div className="app-container">
-            <div ref={containerRef} style={{ position: 'absolute', inset: 0, pointerEvents: gameState === 'playing' ? 'auto' : 'none' }} />
+  const startMultiplayerGame = async () => {
+    if (!roomId) return;
 
-            {gameState === 'menu' && (
-                <div className="menu-view">
-                    <div className="glass-panel">
-                        <div className="menu-title">Word Master</div>
-                        <input className="input-field" placeholder="Beceneved" value={playerName} onChange={e=>setPlayerName(e.target.value)} maxLength={12}/>
-                        <button className="play-btn btn-green" onClick={createRoom}>Új Szoba Létrehozása</button>
-                        <div style={{margin: '20px 0', opacity: 0.5, fontSize: '14px'}}>VAGY</div>
-                        <input className="input-field" placeholder="Szobakód" value={roomCodeInput} onChange={e=>setRoomCodeInput(e.target.value)} maxLength={6}/>
-                        <button className="play-btn btn-blue" onClick={joinRoom}>Csatlakozás</button>
-                    </div>
-                </div>
-            )}
+    // Megkevert zsák generálása
+    const initialBag: string[] = [];
+    Object.entries(LETTER_DEF).forEach(([char, def]) => {
+        for(let i = 0; i < def.c; i++) initialBag.push(char);
+    });
+    initialBag.sort(() => Math.random() - 0.5);
 
-            {gameState === 'lobby' && (
-                <div className="menu-view">
-                    <div className="glass-panel">
-                        <h2>Szobakód: <span style={{color:'#fde047'}}>{roomId}</span></h2>
-                        <div style={{margin: '20px 0', textAlign:'left'}}>
-                            <h3 style={{fontSize:'14px', opacity:0.7, textTransform:'uppercase'}}>Játékosok ({config.playerNames.length}/4):</h3>
-                            {config.playerNames.map((n, i) => (
-                                <div key={i} style={{padding:'10px', background:'rgba(255,255,255,0.1)', borderRadius:'8px', marginBottom:'5px', fontWeight:'bold'}}>{n}</div>
-                            ))}
-                        </div>
-                        {isHost ? (
-                            <button className="play-btn btn-green" onClick={startGame}>Játék Indítása</button>
-                        ) : (
-                            <div style={{opacity:0.7}}>Várakozás a házigazdára...</div>
-                        )}
-                    </div>
-                </div>
-            )}
+    // Kezdő 7 betű kiosztása mindenkinek
+    const initialRacks: Record<string, string[]> = {};
+    config.playerNames.forEach(name => {
+        initialRacks[name] = initialBag.splice(0, 7);
+    });
 
-            {gameState === 'playing' && (
-                <>
-                    <div className="top-hud">
-                        {config.playerNames.map((name, i) => (
-                            <div key={i} className={`player-pill ${currentPlayer===i?'active':''}`}>
-                                <div style={{fontSize:'10px', opacity:0.7, textTransform:'uppercase'}}>{name}</div>
-                                <div style={{fontSize:'18px', fontWeight:'800'}}>{scores[i] || 0}</div>
-                            </div>
-                        ))}
-                    </div>
+    await update(ref(db, `rooms/${roomId}`), { 
+        status: 'playing',
+        letterBag: JSON.stringify(initialBag),
+        racks: JSON.stringify(initialRacks)
+    });
+  };
 
-                    <div className="bottom-bar">
-                        {config.playerNames[currentPlayer] !== playerName ? (
-                             <div style={{ padding: '12px 20px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', border: '2px solid rgba(255,255,255,0.2)', pointerEvents:'auto', fontSize:'14px' }}>
-                                 ⏳ Várakozás {config.playerNames[currentPlayer]} lépésére...
-                             </div>
-                        ) : (
-                            <>
-                                <button className="action-btn btn-glass" onClick={() => handleTurnAction('pass')} disabled={validating}>🔄 Passzolás</button>
-                                <button className="action-btn btn-glass" onClick={() => gameRef.current?.recallTiles()} disabled={validating}>🔙 Visszahív</button>
-                                <button className="action-btn btn-primary" onClick={() => handleTurnAction('submit')} disabled={validating}>
-                                    {validating ? 'Ellenőrzés...' : 'LÉPÉS KÉSZ'}
-                                </button>
-                            </>
-                        )}
-                    </div>
-                </>
-            )}
+  const backToMenu = () => {
+    setGameState('menu');
+    setRoomId('');
+    if(gameRef.current) gameRef.current.transitionToMenuView();
+  };
 
-            {toastMsg.text && <div className={`toast ${toastMsg.type}`}>{toastMsg.text}</div>}
-        </div>
-    );
-}
+  const onTempPlaceSync = (placements: any[]) => {
+    if (roomIdRef.current) {
+      update(ref(db, `rooms/${roomIdRef.current}`), { 
+          tempPlacements: JSON.stringify(placements) 
+      });
+    }
+  };
 
-// ==========================================
-// 3D JÁTÉKMOTOR (GameEngine)
-// ==========================================
-class GameEngine {
-    container: HTMLElement;
-    scene: THREE.Scene;
-    camera: THREE.PerspectiveCamera;
-    renderer: THREE.WebGLRenderer;
-    controls: OrbitControls;
-    
-    raycaster = new THREE.Raycaster();
-    mouse = new THREE.Vector2();
-    intersectPoint = new THREE.Vector3();
-    
-    activeTheme: any;
-    currentBoardType: string;
-    
-    dragging: any = null;
-    selectedTile: any = null;
-    specialMap = new Map();
-    opponentTempTiles: any[] = [];
-    latestBoardData: any[] = [];
-    
-    onTempPlaceCallback: (placements: any[]) => void;
-    onNeedsLetters: (count: number) => string[];
+  // --- 3D GAME ENGINE ---
+  useEffect(() => {
+    if (!containerRef.current) return;
 
-    state = {
+    class Game {
+      scene: any; camera: any; renderer: any; controls: any; raycaster: any; mouse: any; dragPlane: any;
+      dragging: any = null; selectedTile: any = null; hasDragged: boolean = false; textureCache: any = {};
+      woodTexture: any = null; tableTexture: any = null;
+      activeTheme: any = THEMES['luxus'];
+      currentBoardType: string = 'normal';
+      specialMap = new Map();
+      opponentTempTiles: any[] = [];
+      onTempPlaceCallback: (placements: any[]) => void;
+      
+      state = {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
+        logicalBoard: [] as {r: number, c: number, char: string}[],
         placedThisTurn: [] as any[],
+        turnCount: 0,
         isMyTurn: false
-    };
+      };
 
-    constructor(container: HTMLElement, config: any) {
-        this.container = container;
-        this.activeTheme = (THEMES as any)[config.theme] || THEMES['luxus'];
-        this.currentBoardType = config.boardType;
-
+      constructor(container: HTMLElement, syncCallback: any) {
+        this.onTempPlaceCallback = syncCallback;
         this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(this.activeTheme.bgBase);
-        this.scene.fog = new THREE.FogExp2(this.activeTheme.fogColor, 0.015);
-
-        this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-        this.camera.position.set(0, 40, 30);
+        this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 100);
+        this.camera.position.set(25, 15, 25); 
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         this.renderer.shadowMap.enabled = true;
-        this.container.appendChild(this.renderer.domElement);
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        container.appendChild(this.renderer.domElement);
 
+        this.dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.4);
+        this.raycaster = new THREE.Raycaster();
+        this.mouse = new THREE.Vector2();
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-        this.controls.enablePan = false; 
-        this.controls.maxPolarAngle = Math.PI / 2.2;
-        this.controls.autoRotate = true; 
-        this.controls.autoRotateSpeed = 1.5;
+        this.controls.enableDamping = true;
+        this.controls.autoRotate = true;
+        this.controls.maxPolarAngle = Math.PI / 2.1;
 
-        this.initLighting();
-        this.createTable(); 
+        this.updateThemeColors();
+        this.loadTextures();
+        this.initLights();
+        this.createTable();
         this.generateBoardLayout(this.currentBoardType);
         this.initBoard();
         this.addEvents();
+        this.animate();
+      }
 
-        this.animate = this.animate.bind(this);
-        requestAnimationFrame(this.animate);
-        
-        window.addEventListener('resize', () => {
-            this.camera.aspect = window.innerWidth / window.innerHeight;
-            this.camera.updateProjectionMatrix();
-            this.renderer.setSize(window.innerWidth, window.innerHeight);
-            this.arrangeRack();
-        });
-    }
+      updateConfig(newConfig: any) {
+          const newTheme = (THEMES as any)[newConfig.theme] || THEMES['luxus'];
+          if (this.activeTheme.name !== newTheme.name || this.currentBoardType !== newConfig.boardType) {
+              this.activeTheme = newTheme;
+              this.currentBoardType = newConfig.boardType;
+              this.updateThemeColors();
+              this.loadTextures();
+              this.createTable(); 
+              this.generateBoardLayout(this.currentBoardType);
+              this.initBoard(); 
+          }
+      }
 
-    updateConfig(newConfig: any) {
-        const newTheme = (THEMES as any)[newConfig.theme] || THEMES['luxus'];
-        if (this.activeTheme.name !== newTheme.name || this.currentBoardType !== newConfig.boardType) {
-            this.activeTheme = newTheme;
-            this.currentBoardType = newConfig.boardType;
-            this.scene.background = new THREE.Color(this.activeTheme.bgBase);
-            this.scene.fog = new THREE.FogExp2(this.activeTheme.fogColor, 0.015);
-            this.createTable(); 
-            this.generateBoardLayout(this.currentBoardType);
-            this.initBoard(); 
-            this.syncBoardFromFirebase(this.latestBoardData);
-        }
-    }
+      updateThemeColors() {
+        this.scene.background = new THREE.Color(this.activeTheme.bgBase);
+        this.scene.fog = new THREE.Fog(this.activeTheme.fogColor, 20, 80);
+      }
 
-    transitionToGameView() {
+      transitionToGameView() {
         this.controls.autoRotate = false;
         this.controls.enabled = false;
         
@@ -433,84 +355,151 @@ class GameEngine {
             x: 0, y: targetY, z: targetZ, duration: 2, ease: "power3.inOut",
             onUpdate: () => this.controls.update(),
             onComplete: () => {
-                this.controls.enabled = true; 
-                this.controls.minDistance = 10; 
-                this.controls.maxDistance = 50;
+                this.controls.enabled = true; this.controls.minDistance = 10; this.controls.maxDistance = 50;
             }
         });
-    }
+      }
 
-    // --- SAJÁT 3D GENERÁLÓ FÜGGVÉNYEK HELYE ---
-    // Ide nyugodtan beillesztheted a korábbi initLighting, createTable, stb. kódodat,
-    // ha voltak benne egyedi anyagok/textúrák. Ha nem, ezek az alapok is tökéletesek!
+      transitionToMenuView() {
+        this.controls.enabled = false;
+        gsap.to(this.camera.position, {
+            x: 25, y: 15, z: 25, duration: 2, ease: "power3.inOut",
+            onComplete: () => { this.controls.enabled = true; this.controls.autoRotate = true; }
+        });
+      }
 
-    initLighting() { 
+      initLights() {
         const ambient = new THREE.AmbientLight(0xffffff, 0.6);
         this.scene.add(ambient);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
-        dirLight.position.set(10, 20, 10);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(15, 30, 10);
         dirLight.castShadow = true;
         this.scene.add(dirLight);
-    }
-    
-    createTable() { 
-        const geo = new THREE.BoxGeometry(20, 1, 20);
-        const mat = new THREE.MeshStandardMaterial({ color: this.activeTheme.woodColor });
-        const table = new THREE.Mesh(geo, mat);
-        table.position.y = -0.5;
-        table.receiveShadow = true;
-        this.scene.add(table);
-    }
-    
-    generateBoardLayout(type: string) { 
-        // Egyszerűsített szorzó kiosztás példa
-        this.specialMap.set("7_7", "start");
-        this.specialMap.set("0_0", "tw"); this.specialMap.set("0_14", "tw");
-    }
-    
-    initBoard() { 
+        this.camera.add(new THREE.PointLight(0xffffff, 0.4));
+        this.scene.add(this.camera);
+      }
+
+      loadTextures() {
+        const cvs = document.createElement('canvas'); cvs.width = 1024; cvs.height = 1024;
+        const ctx = cvs.getContext('2d')!;
+        const grd = ctx.createRadialGradient(512, 512, 100, 512, 512, 900);
+        grd.addColorStop(0, this.activeTheme.tableParams.color1); 
+        grd.addColorStop(1, this.activeTheme.tableParams.color2); 
+        ctx.fillStyle = grd; ctx.fillRect(0,0,1024,1024);
+        this.tableTexture = new THREE.CanvasTexture(cvs);
+        
+        const cvsW = document.createElement('canvas'); cvsW.width = 512; cvsW.height = 512;
+        const ctxW = cvsW.getContext('2d')!;
+        ctxW.fillStyle = this.activeTheme.woodColor; ctxW.fillRect(0,0,512,512);
+        this.woodTexture = new THREE.CanvasTexture(cvsW);
+      }
+
+      createTable() {
+        const oldTable = this.scene.getObjectByName("tableMesh");
+        if(oldTable) this.scene.remove(oldTable);
+        const geo = new THREE.PlaneGeometry(150, 150);
+        const mat = new THREE.MeshStandardMaterial({ map: this.tableTexture, roughness: 0.5, metalness: 0.1 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.name = "tableMesh";
+        mesh.rotation.x = -Math.PI / 2; mesh.position.y = -2; mesh.receiveShadow = true;
+        this.scene.add(mesh);
+      }
+
+      generateBoardLayout(type: string) {
+        this.specialMap.clear();
+        this.specialMap.set('7_7', { lines:['★', 'START'], color: this.activeTheme.special.start });
+        if (type === 'normal') {
+            const setSym = (arr: any[], val: any) => arr.forEach(p => this.specialMap.set(`${p[0]}_${p[1]}`, val));
+            setSym([[0,0], [0,7], [0,14], [7,0], [7,14], [14,0], [14,7], [14,14]], { lines:['TRIPLA', 'SZÓ'], color: this.activeTheme.special.tw });
+            setSym([[1,1], [2,2], [3,3], [4,4], [1,13], [2,12], [3,11], [4,10], [13,1], [12,2], [11,3], [10,4], [13,13], [12,12], [11,11], [10,10]], { lines:['DUPLA', 'SZÓ'], color: this.activeTheme.special.dw });
+            setSym([[1,5], [1,9], [5,1], [5,5], [5,9], [5,13], [9,1], [9,5], [9,9], [9,13], [13,5], [13,9]], { lines:['TRIPLA', 'BETŰ'], color: this.activeTheme.special.tl });
+            setSym([[0,3], [0,11], [2,6], [2,8], [3,0], [3,7], [3,14], [6,2], [6,6], [6,8], [6,12], [7,3], [7,11], [8,2], [8,6], [8,8], [8,12], [11,0], [11,7], [11,14], [12,6], [12,8], [14,3], [14,11]], { lines:['DUPLA', 'BETŰ'], color: this.activeTheme.special.dl });
+        }
+      }
+
+      getCellInfo(r: number, c: number) {
+        const key = `${r}_${c}`;
+        if (this.specialMap.has(key)) return this.specialMap.get(key);
+        return { lines:[], color: this.activeTheme.boardField };
+      }
+
+      getTexture(lines: string[], color: string | null, isTile: boolean) {
+        const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
+        if (this.textureCache[id]) return this.textureCache[id];
+        const size = 512; const cvs = document.createElement('canvas'); cvs.width = size; cvs.height = size;
+        const ctx = cvs.getContext('2d')!;
+
+        if (isTile) {
+            const grd = ctx.createLinearGradient(0,0,size,size);
+            ctx.fillStyle = '#fceabb'; ctx.fillRect(0,0,size,size);
+        } else {
+            ctx.fillStyle = '#' + new THREE.Color(color!).getHexString(); ctx.fillRect(0,0,size,size);
+            ctx.strokeStyle = "rgba(0,0,0,0.1)"; ctx.lineWidth = 10; ctx.strokeRect(0,0,size,size);
+        }
+
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
+        
+        if (isTile) {
+            ctx.fillStyle = textColor; ctx.font = 'bold 280px "Arial", sans-serif';
+            ctx.fillText(lines[0], size/2, size/2 - 25);
+            ctx.font = 'bold 80px "Arial", sans-serif'; 
+            const pts = LETTER_DEF[lines[0]] ? LETTER_DEF[lines[0]].p.toString() : "1";
+            ctx.fillText(pts, size - 70, size - 70);
+        } else if (lines.length > 0) {
+            ctx.fillStyle = textColor; ctx.font = `900 65px "Arial", sans-serif`;
+            lines.forEach((line, i) => { ctx.fillText(line, size/2, 220 + i * 80); });
+        }
+        return new THREE.CanvasTexture(cvs);
+      }
+
+      initBoard() {
+        const oldGroup = this.scene.getObjectByName("boardGroup");
+        if(oldGroup) this.scene.remove(oldGroup);
+        const group = new THREE.Group(); group.name = "boardGroup";
+
+        const frameGeo = new RoundedBoxGeometry(17.2, 1.0, 17.2, 4, 0.2);
+        const frameMat = new THREE.MeshPhysicalMaterial({ map: this.woodTexture, color: this.activeTheme.frameColor, roughness: 0.5 });
+        const frame = new THREE.Mesh(frameGeo, frameMat);
+        frame.position.y = -0.55; frame.receiveShadow = true; group.add(frame);
+
+        const cellGeo = new RoundedBoxGeometry(0.96, 0.1, 0.96, 2, 0.05);
         for(let r=0; r<15; r++) {
             for(let c=0; c<15; c++) {
-                const geo = new THREE.BoxGeometry(1, 0.1, 1);
-                const mat = new THREE.MeshStandardMaterial({ color: this.activeTheme.boardField });
-                const mesh = new THREE.Mesh(geo, mat) as any;
-                mesh.position.set((c - 7) * 1.05, 0.05, (r - 7) * 1.05);
-                mesh.userData = { isSlot: true, r, c };
-                mesh.receiveShadow = true;
-                this.scene.add(mesh);
+                const info = this.getCellInfo(r, c);
+                const tex = this.getTexture(info.lines, info.color, false);
+                const matTop = new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.8 });
+                const matBody = new THREE.MeshPhysicalMaterial({ color: info.color });
+                const cell = new THREE.Mesh(cellGeo, [matBody, matBody, matTop, matBody, matBody, matBody]);
+                cell.position.set((c-7)*1.05, 0.05, (r-7)*1.05); cell.userData = { isSlot: true, r, c }; group.add(cell);
             }
         }
-    }
-    
-    createTileMesh(char: string) {
-        const geo = new RoundedBoxGeometry(0.9, 0.2, 0.9, 4, 0.1);
-        
-        // Canvas textúra rajzolása a betűnek
-        const canvas = document.createElement('canvas');
-        canvas.width = 128; canvas.height = 128;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-            ctx.fillStyle = '#f3e5ab'; ctx.fillRect(0, 0, 128, 128);
-            ctx.fillStyle = '#000000'; 
-            ctx.font = 'bold 70px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText(char, 64, 64);
-            
-            // Pontérték a sarokba
-            const val = LETTER_DEF[char as keyof typeof LETTER_DEF]?.value || 1;
-            ctx.font = 'bold 24px Arial';
-            ctx.fillText(val.toString(), 100, 100);
-        }
-        const tex = new THREE.CanvasTexture(canvas);
-        const mat = new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff });
-        const mesh = new THREE.Mesh(geo, mat) as any;
-        mesh.userData = { isTile: true, char: char, isPlaced: false };
-        mesh.castShadow = true;
-        
-        return mesh;
-    }
-    // ------------------------------------------
+        this.scene.add(group);
+      }
 
-    arrangeRack() {
+      createTileMesh(char: string) {
+        const geo = new RoundedBoxGeometry(0.95, 0.25, 0.95, 4, 0.08);
+        const tex = this.getTexture([char], null, true);
+        const matTop = new THREE.MeshPhysicalMaterial({ map: tex, color: 0xffffff, roughness: 0.2 });
+        const matBody = new THREE.MeshPhysicalMaterial({ color: 0xccaa88 });
+        const mesh = new THREE.Mesh(geo, [matBody, matBody, matTop, matBody, matBody, matBody]);
+        mesh.castShadow = true; mesh.userData = { isTile: true, char: char };
+        return mesh;
+      }
+      
+      fillRack(newChars: string[] = []) {
+        newChars.forEach(char => {
+            if(this.state.rack.length >= 7) return;
+            const tile = this.createTileMesh(char);
+            tile.position.set(0, 8, 15);
+            this.scene.add(tile);
+            this.state.rack.push(tile);
+            tile.userData.isPlaced = false;
+        });
+        this.arrangeRack();
+      }
+
+      arrangeRack() {
         const spacing = window.innerWidth < 600 ? 0.95 : 1.1; 
         this.state.rack.forEach((tile, i) => {
             if(tile.userData.isPlaced) return;
@@ -520,251 +509,272 @@ class GameEngine {
                 gsap.to(tile.rotation, { x: Math.PI / 3, y: 0, z: 0, duration: 0.6 });
             }
         });
-    }
+      }
 
-    triggerTempSync() {
+      triggerTempSync() {
         if(this.onTempPlaceCallback) {
             const tempMap = this.state.placedThisTurn.map(p => ({ r: p.r, c: p.c, char: p.tile.userData.char }));
             this.onTempPlaceCallback(tempMap);
         }
-    }
+      }
 
-    // --- MOBIL & EGÉR TOUCH ESEMÉNYEK ---
-    addEvents() {
+      addEvents() {
         const el = this.renderer.domElement;
+        el.style.touchAction = 'none';
 
-        const getPointer = (e: any) => {
-            const isTouch = e.touches && e.touches.length > 0;
-            const clientX = isTouch ? e.touches[0].clientX : e.clientX;
-            let clientY = isTouch ? e.touches[0].clientY : e.clientY;
-
-            if (isTouch && this.dragging && e.type === 'touchmove') {
-                clientY += 60; // FAT-FINGER FIX: feljebb tolja az ujj fölé
-            }
-
-            const rect = el.getBoundingClientRect();
-            return {
-                x: ((clientX - rect.left) / rect.width) * 2 - 1,
-                y: -((clientY - rect.top) / rect.height) * 2 + 1
-            };
-        };
-
-        const onDown = (e: any) => {
-            if(!this.state.isMyTurn) return;
+        const onPointerDown = (e: PointerEvent) => {
+            if (!this.state.isMyTurn) return; 
+            this.hasDragged = false;
             
-            const pointer = getPointer(e);
-            this.mouse.x = pointer.x;
-            this.mouse.y = pointer.y;
-
+            const rect = el.getBoundingClientRect();
+            this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
             this.raycaster.setFromCamera(this.mouse, this.camera);
             const hits = this.raycaster.intersectObjects(this.scene.children, true);
             
             const hitTile = hits.find((i:any)=>i.object.userData.isTile);
-            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
-
-            if (!hitTile && !hitSlot && this.selectedTile) {
-                this.returnToRack(this.selectedTile);
-                this.selectedTile = null;
-                return;
-            }
-
-            if(hitSlot && this.selectedTile && (!hitTile || hitTile.object === this.selectedTile)) {
-                if (e.cancelable) e.preventDefault();
-                const r = hitSlot.object.userData.r; 
-                const c = hitSlot.object.userData.c;
-                this.placeTileToGrid(this.selectedTile, r, c);
-                this.selectedTile = null;
-                this.dragging = null;
-                return;
-            }
-
             if(hitTile) {
                 const t = hitTile.object;
-                const fixed = this.state.boardGrid.some((r: any)=>r.includes(t)) && !this.state.placedThisTurn.some((p: any)=>p.tile===t);
+                const fixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
                 
                 if(!fixed) {
                     if (e.cancelable) e.preventDefault(); 
+                    
                     if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) {
                         gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
                     }
                     this.dragging = t; 
                     this.selectedTile = t; 
-                    this.controls.enabled = false;
+                    this.controls.enabled = false; 
                     gsap.to(t.position, {y:3, duration:0.2}); 
                     gsap.to(t.rotation, {x:0, z:0, duration:0.2});
                 }
+                return;
+            }
+
+            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
+            if(hitSlot && this.selectedTile) {
+                if (e.cancelable) e.preventDefault();
+                const r = hitSlot.object.userData.r; const c = hitSlot.object.userData.c;
+                this.placeTileToGrid(this.selectedTile, r, c);
+                this.selectedTile = null;
+            }
+
+            if(!hitTile && !hitSlot && this.selectedTile) {
+                this.returnToRack(this.selectedTile); 
+                this.selectedTile = null;
             }
         };
 
-        const onMove = (e: any) => {
+        const onPointerMove = (e: PointerEvent) => {
             if(!this.dragging || !this.state.isMyTurn) return;
             if (e.cancelable) e.preventDefault(); 
-
-            const pointer = getPointer(e);
-            this.mouse.x = pointer.x;
-            this.mouse.y = pointer.y;
-
+            this.hasDragged = true;
+            
+            const rect = el.getBoundingClientRect();
+            this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            
+            // Fat-finger y-offset a kényelmes mobil használathoz (kb. 60px eltolás felfelé)
+            const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+            const offsetY = isTouch ? 60 : 0;
+            const pointerY = e.clientY - offsetY;
+            
+            this.mouse.y = -((pointerY - rect.top) / rect.height) * 2 + 1;
+            
             this.raycaster.setFromCamera(this.mouse, this.camera);
-            const hits = this.raycaster.intersectObjects(this.scene.children, true);
-            const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
-
-            if(hitSlot) {
-                this.dragging.position.x = hitSlot.object.position.x;
-                this.dragging.position.z = hitSlot.object.position.z;
-                this.dragging.position.y = 1.5; 
-            } else {
-                this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0), -2), this.intersectPoint);
-                this.dragging.position.copy(this.intersectPoint);
+            const target = new THREE.Vector3();
+            this.raycaster.ray.intersectPlane(this.dragPlane, target);
+            if(target) {
+                this.dragging.position.x = target.x;
+                this.dragging.position.z = target.z;
             }
         };
 
-        const onUp = () => {
-            if(this.dragging) {
-                const hits = this.raycaster.intersectObjects(this.scene.children, true);
-                const hitSlot = hits.find((i:any)=>i.object.userData.isSlot);
-                
-                if(hitSlot) {
-                    const r = hitSlot.object.userData.r; 
-                    const c = hitSlot.object.userData.c;
-                    this.placeTileToGrid(this.dragging, r, c);
+        const onPointerUp = () => {
+            if(!this.dragging || !this.state.isMyTurn) return;
+            
+            if (this.hasDragged) {
+                const gx = Math.round(this.dragging.position.x/1.05); const gz = Math.round(this.dragging.position.z/1.05);
+                if(Math.abs(gx)<=7 && Math.abs(gz)<=7) {
+                    this.placeTileToGrid(this.dragging, gz+7, gx+7);
                     this.selectedTile = null;
-                } 
-                this.dragging = null; 
+                } else {
+                    this.returnToRack(this.dragging);
+                    this.selectedTile = null;
+                }
             }
+            
+            this.dragging = null; 
             this.controls.enabled = true; 
         };
 
-        el.addEventListener('mousedown', onDown); el.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-        el.addEventListener('touchstart', onDown, { passive: false }); el.addEventListener('touchmove', onMove, { passive: false }); window.addEventListener('touchend', onUp);
-    }
+        el.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp); 
+        window.addEventListener('resize', this.onResize);
+      }
 
-    placeTileToGrid(tile: any, r: number, c: number) {
-        if(!this.state.boardGrid[r][c] || this.state.placedThisTurn.some(p=>p.tile===this.state.boardGrid[r][c])) {
-            const oldP = this.state.placedThisTurn.find(p=>p.tile===tile);
-            if(oldP) this.state.boardGrid[oldP.r][oldP.c] = null;
-            
-            gsap.to(tile.position, { x: (c - 7) * 1.05, y: 0.18, z: (r - 7) * 1.05, duration: 0.2 });
-            this.state.boardGrid[r][c] = tile;
+      placeTileToGrid(tile: any, r: number, c: number) {
+        const fixed = this.state.logicalBoard.some(lb => lb.r === r && lb.c === c);
+        const current = this.state.placedThisTurn.some(p=>p.r===r && p.c===c && p.tile!==tile);
+        if(!fixed && !current) {
+            gsap.to(tile.position, {x:(c-7)*1.05, y:0.18, z:(r-7)*1.05, duration:0.4, ease:"back.out(1.5)"});
+            const idx = this.state.rack.indexOf(tile); if(idx>-1) this.state.rack.splice(idx,1);
             this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
             this.state.placedThisTurn.push({tile, r, c});
             tile.userData.isPlaced = true;
             this.triggerTempSync(); 
         } else this.returnToRack(tile);
-    }
+      }
 
-    returnToRack(tile: any) {
+      returnToRack(tile: any) {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
-        for(let r=0; r<15; r++){
-            for(let c=0; c<15; c++){
-                if(this.state.boardGrid[r][c] === tile) this.state.boardGrid[r][c] = null;
-            }
-        }
-        tile.userData.isPlaced=false; 
-        this.arrangeRack();
-        this.triggerTempSync();
-    }
+        tile.userData.isPlaced=false; this.arrangeRack();
+        this.triggerTempSync(); 
+      }
 
-    recallTiles() {
-        [...this.state.placedThisTurn].forEach(p => this.returnToRack(p.tile));
-    }
+      async validateTurn() {
+        const placed = this.state.placedThisTurn;
+        if (placed.length === 0) return { success: false, msg: "Nincs lerakott betű!" };
 
-    async validateTurn() {
-        if (this.state.placedThisTurn.length === 0) return { valid: false, error: 'Nem raktál le betűt!' };
+        const rows = new Set(placed.map(p => p.r));
+        const cols = new Set(placed.map(p => p.c));
+        const isHoriz = rows.size === 1;
+        const isVert = cols.size === 1;
+        if (!isHoriz && !isVert && placed.length > 1) return { success: false, msg: "Csak egy vonalban!" };
 
-        const rows = this.state.placedThisTurn.map(p => p.r);
-        const cols = this.state.placedThisTurn.map(p => p.c);
-        const isHorizontal = rows.every(r => r === rows[0]);
-        const isVertical = cols.every(c => c === cols[0]);
+        const align = isHoriz ? 'H' : 'V';
+        let words: {word: string, points: number}[] = [];
 
-        if (!isHorizontal && !isVertical) return { valid: false, error: 'A betűket egy vonalba kell rakni!' };
-
-        let wordsToCheck: { word: string, points: number }[] = [];
-        let totalScore = 0;
-
-        const extractWord = (startR: number, startC: number, dr: number, dc: number) => {
-            let r = startR, c = startC;
-            while (r - dr >= 0 && c - dc >= 0 && r - dr < 15 && c - dc < 15 && this.state.boardGrid[r - dr][c - dc]) {
-                r -= dr; c -= dc;
-            }
-            let word = "", wordMultiplier = 1, wordScore = 0, lettersCount = 0;
-
-            while (r >= 0 && c >= 0 && r < 15 && c < 15 && this.state.boardGrid[r][c]) {
-                const tile = this.state.boardGrid[r][c];
-                const char = tile.userData.char;
-                const letterValue = LETTER_DEF[char as keyof typeof LETTER_DEF]?.value || 1;
-                let letterMultiplier = 1;
-                
-                const isNew = this.state.placedThisTurn.some(p => p.r === r && p.c === c);
-                if (isNew) {
-                    const special = this.specialMap.get(`${r}_${c}`);
-                    if (special === 'dl') letterMultiplier = 2;
-                    if (special === 'tl') letterMultiplier = 3;
-                    if (special === 'dw' || special === 'start') wordMultiplier *= 2;
-                    if (special === 'tw') wordMultiplier *= 3;
-                }
-
-                word += char;
-                wordScore += (letterValue * letterMultiplier);
-                lettersCount++;
-                r += dr; c += dc;
-            }
-            return { word, points: wordScore * wordMultiplier, length: lettersCount };
+        const isTileAt = (r: number, c: number) => this.state.boardGrid[r]?.[c] !== null || this.state.logicalBoard.some(lb => lb.r === r && lb.c === c) || placed.some(p => p.r === r && p.c === c);
+        
+        const getChar = (r: number, c: number) => {
+            const pTile = placed.find(p => p.r === r && p.c === c);
+            if (pTile) return pTile.tile.userData.char;
+            const lbTile = this.state.logicalBoard.find(lb => lb.r === r && lb.c === c);
+            if (lbTile) return lbTile.char;
+            return this.state.boardGrid[r][c]?.userData.char || '';
         };
 
-        const firstP = this.state.placedThisTurn[0];
-        
-        if (isHorizontal || this.state.placedThisTurn.length === 1) {
-            const hWord = extractWord(firstP.r, firstP.c, 0, 1); 
-            if (hWord.length > 1) { wordsToCheck.push(hWord); totalScore += hWord.points; }
-        }
-        
-        if (isVertical || this.state.placedThisTurn.length === 1) {
-            const vWord = extractWord(firstP.r, firstP.c, 1, 0); 
-            if (vWord.length > 1) { wordsToCheck.push(vWord); totalScore += vWord.points; }
-        }
-
-        this.state.placedThisTurn.forEach(p => {
-            if (isHorizontal) {
-                const v = extractWord(p.r, p.c, 1, 0);
-                if (v.length > 1) { wordsToCheck.push(v); totalScore += v.points; }
-            } else {
-                const h = extractWord(p.r, p.c, 0, 1);
-                if (h.length > 1) { wordsToCheck.push(h); totalScore += h.points; }
+        const getFullWord = (r: number, c: number, dir: string) => {
+            let start = dir === 'H' ? c : r;
+            let end = start;
+            while(start > 0) {
+                const pr = dir === 'H' ? r : start - 1;
+                const pc = dir === 'H' ? start - 1 : c;
+                if (isTileAt(pr, pc)) start--; else break;
             }
+            while(end < 14) {
+                const nr = dir === 'H' ? r : end + 1;
+                const nc = dir === 'H' ? end + 1 : c;
+                if (isTileAt(nr, nc)) end++; else break;
+            }
+            if (end === start) return null;
+
+            let word = "";
+            let wordPoints = 0;
+            let wordMult = 1;
+
+            for(let i = start; i <= end; i++) {
+                const cr = dir === 'H' ? r : i;
+                const cc = dir === 'H' ? i : c;
+                const char = getChar(cr, cc);
+                word += char;
+
+                const isNew = placed.some(p => p.r === cr && p.c === cc);
+                let charPts = LETTER_DEF[char]?.p || 1;
+
+                if (isNew) {
+                    const info = this.getCellInfo(cr, cc);
+                    if (info.lines.includes('DUPLA') && info.lines.includes('BETŰ')) charPts *= 2;
+                    if (info.lines.includes('TRIPLA') && info.lines.includes('BETŰ')) charPts *= 3;
+                    if (info.lines.includes('DUPLA') && info.lines.includes('SZÓ')) wordMult *= 2;
+                    if (info.lines.includes('TRIPLA') && info.lines.includes('SZÓ')) wordMult *= 3;
+                    if (info.lines.includes('START') || info.lines.join('').includes('START')) wordMult *= 2;
+                }
+                wordPoints += charPts;
+            }
+            return { word, points: wordPoints * wordMult };
+        };
+
+        // Fő szó olvasása
+        const first = placed[0];
+        const mainWordObj = getFullWord(first.r, first.c, align) || { word: first.tile.userData.char, points: LETTER_DEF[first.tile.userData.char]?.p || 1 };
+        if (mainWordObj.word.length > 1) words.push(mainWordObj);
+
+        // Keresztbe kialakult szavak olvasása
+        placed.forEach(p => {
+            const crossDir = align === 'H' ? 'V' : 'H';
+            const crossWordObj = getFullWord(p.r, p.c, crossDir);
+            if (crossWordObj) words.push(crossWordObj);
         });
 
-        if (wordsToCheck.length === 0) return { valid: false, error: 'A szónak legalább 2 betűből kell állnia!' };
-
-        for (const item of wordsToCheck) {
-            const isValid = await checkHungarianWordAPI(item.word);
-            if (!isValid) return { valid: false, error: `Nincs ilyen magyar szó: ${item.word}` };
+        if (words.length === 0) {
+            if (this.state.logicalBoard.length === 0 && placed[0].r === 7 && placed[0].c === 7) return { success: false, msg: "Egy betű nem szó!" };
+            return { success: false, msg: "Nem érintkezik más szavakkal!" };
         }
 
-        if (this.state.placedThisTurn.length === 7) totalScore += 50;
-        return { valid: true, points: totalScore };
-    }
+        // Kapcsolódási és elhelyezési validáció
+        if (this.state.logicalBoard.length === 0) {
+            if (!placed.some(p => p.r === 7 && p.c === 7)) return { success: false, msg: "Az első szónak középre kell kerülnie!" };
+        } else {
+            const connects = placed.some(p => {
+                const {r, c} = p;
+                return (r>0 && isTileAt(r-1, c) && !placed.some(pl=>pl.r===r-1&&pl.c===c)) ||
+                       (r<14 && isTileAt(r+1, c) && !placed.some(pl=>pl.r===r+1&&pl.c===c)) ||
+                       (c>0 && isTileAt(r, c-1) && !placed.some(pl=>pl.r===r&&pl.c===c-1)) ||
+                       (c<14 && isTileAt(r, c+1) && !placed.some(pl=>pl.r===r&&pl.c===c+1));
+            });
+            if (!connects) return { success: false, msg: "A szónak kapcsolódnia kell a meglévő betűkhöz!" };
+        }
 
-    finalizeTurn() {
-        this.state.rack = this.state.rack.filter(t => !this.state.placedThisTurn.some(p => p.tile === t));
-        this.state.placedThisTurn = [];
-    }
+        // Lyukak ellenőrzése
+        if (placed.length > 1) {
+            const rArr = placed.map(p=>p.r);
+            const cArr = placed.map(p=>p.c);
+            const minR = Math.min(...rArr), maxR = Math.max(...rArr);
+            const minC = Math.min(...cArr), maxC = Math.max(...cArr);
 
-    getBoardSnapshot() {
-        const data: any[] = [];
-        for(let r=0; r<15; r++) {
-            for(let c=0; c<15; c++) {
-                const tile = this.state.boardGrid[r][c];
-                if(tile && tile.userData && tile.userData.char) {
-                    data.push({ r, c, char: tile.userData.char });
+            for(let r=minR; r<=maxR; r++) {
+                for(let c=minC; c<=maxC; c++) {
+                    if (align === 'H' && r === minR) {
+                        if (!isTileAt(r,c)) return { success: false, msg: "Lyukas szó!" };
+                    }
+                    if (align === 'V' && c === minC) {
+                        if (!isTileAt(r,c)) return { success: false, msg: "Lyukas szó!" };
+                    }
                 }
             }
         }
-        return data;
-    }
 
-    syncBoardFromFirebase(boardData: any[]) {
-        this.latestBoardData = boardData;
+        return { success: true, words, placed };
+      }
+
+      finalizeTurn(placed: any[]) {
+        placed.forEach(p => {
+            this.state.boardGrid[p.r][p.c] = p.tile;
+            p.tile.userData.boardR = p.r;
+            p.tile.userData.boardC = p.c;
+            
+            this.state.logicalBoard = this.state.logicalBoard.filter(lb => !(lb.r === p.r && lb.c === p.c));
+            this.state.logicalBoard.push({ r: p.r, c: p.c, char: p.tile.userData.char });
+
+            const glow = new THREE.PointLight(0x00ff00, 2, 3);
+            glow.position.copy(p.tile.position); glow.position.y=1;
+            this.scene.add(glow);
+            gsap.to(glow, {intensity:0, duration:1.5, onComplete:()=>this.scene.remove(glow)});
+        });
+        this.state.placedThisTurn = []; this.state.turnCount++;
+      }
+
+      getBoardSnapshot() {
+        return this.state.logicalBoard;
+      }
+
+      syncBoardFromFirebase(boardData: any[]) {
+        this.state.logicalBoard = boardData;
         const incomingMap = new Map();
         boardData.forEach(item => incomingMap.set(`${item.r}_${item.c}`, item.char));
 
@@ -778,6 +788,8 @@ class GameEngine {
                         if (existingTile) this.scene.remove(existingTile);
                         const newTile = this.createTileMesh(incomingChar);
                         newTile.position.set((c - 7) * 1.05, 0.18, (r - 7) * 1.05);
+                        newTile.userData.boardR = r;
+                        newTile.userData.boardC = c;
                         this.scene.add(newTile);
                         this.state.boardGrid[r][c] = newTile;
                         newTile.userData.isPlaced = true;
@@ -790,28 +802,340 @@ class GameEngine {
                 }
             }
         }
-    }
+      }
 
-    syncOpponentPlacements(placements: any[]) {
+      syncOpponentPlacements(placements: any[]) {
         this.opponentTempTiles.forEach((t: any) => this.scene.remove(t));
         this.opponentTempTiles = [];
+
         if (this.state.isMyTurn) return; 
 
         placements.forEach(p => {
-            const mesh = this.createTileMesh(p.char);
-            mesh.material.forEach((mat: any) => { 
-                mat.transparent = true; 
-                mat.opacity = 0.5; 
-            });
-            mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
-            this.scene.add(mesh);
-            this.opponentTempTiles.push(mesh);
+            if (!this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c)) {
+                const mesh = this.createTileMesh(p.char);
+                mesh.material.forEach((mat: any) => { 
+                    mat.transparent = true; 
+                    mat.opacity = 0.5; 
+                    if(mat.color) mat.color.setHex(0xaaaaaa); 
+                });
+                mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+                this.scene.add(mesh);
+                this.opponentTempTiles.push(mesh);
+            }
         });
-    }
+      }
 
-    animate() {
+      recall() { [...this.state.placedThisTurn].forEach(p => this.returnToRack(p.tile)); }
+      shuffle() { this.state.rack.sort(() => Math.random() - 0.5); this.arrangeRack(); }
+
+      animate = () => {
         requestAnimationFrame(this.animate);
         this.controls.update();
         this.renderer.render(this.scene, this.camera);
+      }
+      dispose() {
+        window.removeEventListener('resize', this.onResize);
+        this.renderer.domElement.removeEventListener('pointerdown', () => {});
+        window.removeEventListener('pointermove', () => {});
+        window.removeEventListener('pointerup', () => {});
+        window.removeEventListener('pointercancel', () => {});
+        this.renderer.dispose();
+      }
+      onResize = () => {
+          this.camera.aspect = window.innerWidth / window.innerHeight;
+          this.camera.updateProjectionMatrix();
+          this.renderer.setSize(window.innerWidth, window.innerHeight);
+          this.arrangeRack(); 
+      }
     }
+
+    const gameInstance = new Game(containerRef.current, onTempPlaceSync);
+    gameRef.current = gameInstance;
+    
+    return () => {
+        gameInstance.dispose();
+        gameRef.current = null;
+    };
+  }, []);
+
+  // --- LERAKÁS ÉS API ---
+  const handleValidate = async () => {
+    if(!gameRef.current || validating) return;
+    setValidating(true);
+    
+    const check = await gameRef.current.validateTurn();
+    
+    if(check.success === false) { 
+        showToast(check.msg, true);
+        setValidating(false);
+        return;
+    }
+
+    const { words, placed } = check;
+    let allValid = true;
+    let unknownWord = null;
+    let totalPoints = 0;
+
+    for (let wObj of words) {
+        const exists = await checkHungarianWordAPI(wObj.word);
+        if (!exists) {
+            allValid = false;
+            unknownWord = wObj.word;
+            break;
+        }
+        totalPoints += wObj.points;
+    }
+
+    if (placed.length === 7) totalPoints += 50; 
+
+    if (allValid) {
+        completeTurn(totalPoints, placed);
+    } else {
+        setPopupData({
+            word: unknownWord,
+            onAccept: () => {
+                WORD_CACHE.add(unknownWord); 
+                let pts = words.reduce((acc: number, curr: any) => acc + curr.points, 0);
+                if (placed.length === 7) pts += 50;
+                completeTurn(pts, placed);
+                setPopupData(null);
+            },
+            onReject: () => {
+                showToast(`Nincs ilyen szó: ${unknownWord}`, true);
+                setValidating(false);
+                setPopupData(null);
+            }
+        });
+    }
+  };
+
+  const completeTurn = async (pts: number, placed: any[]) => {
+    gameRef.current.finalizeTurn(placed);
+    const boardSnapshot = gameRef.current.getBoardSnapshot();
+    const nextTurn = (currentPlayer + 1) % config.playerNames.length;
+    const newPlayers = config.playerNames.map((n, i) => ({ 
+        name: n, 
+        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
+    }));
+
+    // Zsák kezelése (húzás)
+    const needed = 7 - gameRef.current.state.rack.length;
+    let newBag = [...globalLetterBag];
+    let newlyDrawn: string[] = [];
+    if (needed > 0 && newBag.length > 0) {
+        newlyDrawn = newBag.splice(0, needed);
+    }
+
+    const currentRackChars = gameRef.current.state.rack.map((t:any) => t.userData.char);
+    const nextRack = [...currentRackChars, ...newlyDrawn];
+
+    try {
+        await update(ref(db, `rooms/${roomId}`), { 
+            currentTurn: nextTurn, 
+            players: newPlayers,
+            boardData: JSON.stringify(boardSnapshot),
+            tempPlacements: JSON.stringify([]),
+            letterBag: JSON.stringify(newBag),
+            [`racks/${playerName}`]: nextRack
+        });
+        showToast(`Kész! +${pts}`, false);
+    } catch(err) {
+        showToast('Hálózati hiba!', true);
+    }
+    
+    setTimeout(() => { 
+        setValidating(false); 
+    }, 800);
+  };
+
+  return (
+    <>
+      <style jsx global>{`
+        /* MOBIL OPTIMALIZÁCIÓ */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: 'Inter', sans-serif; 
+            background: #000;
+            touch-action: none; 
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
+        
+        .menu-view {
+            height: 100dvh;
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            overflow-y: auto;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        
+        @media (max-height: 600px) {
+            .menu-view {
+                align-items: flex-start;
+                padding-top: max(20px, 10vh);
+            }
+        }
+
+        .popup-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
+            display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 100;
+        }
+        .popup-box {
+            background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
+            border: 2px solid #ffcc00; padding: 25px; border-radius: 20px;
+            text-align: center; color: white; box-shadow: 0 0 50px rgba(255, 204, 0, 0.3);
+            width: 90%; max-width: 350px;
+        }
+        
+        .glass-panel {
+            pointer-events: auto; background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 25px 20px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; 
+            width: 92%; max-width: 400px; box-sizing: border-box;
+        }
+        .menu-title { font-size: 32px; font-weight: 900; text-align: center; margin-bottom: 20px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; }
+        
+        .modern-btn { padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; cursor: pointer; transition: all 0.2s; font-weight: 600; font-size: 14px;}
+        .modern-btn.active { background: white; color: black; border-color: white; }
+        .play-btn { width: 100%; margin-top: 15px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 16px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
+        
+        .game-header { position: absolute; top: 0; left: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 10px; width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); backdrop-filter: blur(5px); z-index: 20; }
+        .player-pill { background: rgba(0,0,0,0.6); padding: 6px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
+        .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
+        
+        .bottom-bar { position: absolute; bottom: 25px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; pointer-events: none; padding: 0 10px; box-sizing: border-box; z-index: 20; }
+        .action-btn { pointer-events: auto; padding: 12px 18px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 13px; backdrop-filter: blur(10px); }
+        .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
+        .btn-primary { background: #10b981; color: white; }
+        
+        .toast { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 12px 20px; border-radius: 50px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 1000; text-align: center; width: max-content; max-width: 90%; }
+        .toast.show { opacity: 1; }
+        
+        .input-group { margin-bottom: 15px; }
+        .input-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; margin-bottom: 5px; }
+        .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+        .modern-input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 12px; color: white; margin-bottom: 5px; font-weight: 600; box-sizing: border-box;}
+
+        @media (max-width: 600px) {
+            .menu-title { font-size: 26px; }
+            .glass-panel { padding: 20px 15px; }
+            .play-btn { padding: 14px; font-size: 14px; }
+            .bottom-bar { bottom: 35px; } 
+        }
+      `}</style>
+      
+      <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
+
+      {popupData && (
+        <div className="popup-overlay">
+            <div className="popup-box">
+                <h2 style={{margin:'0 0 10px 0', fontSize:'20px'}}>ISMERETLEN SZÓ</h2>
+                <div style={{fontSize:'28px', fontWeight:'bold', color:'#ffcc00', marginBottom:'20px'}}>"{popupData.word}"</div>
+                <div style={{display:'flex', gap:'10px', justifyContent:'center'}}>
+                    <button className="action-btn btn-glass" onClick={popupData.onReject} style={{background:'rgba(255,50,50,0.2)', flex:1}}>NEM</button>
+                    <button className="action-btn btn-primary" onClick={popupData.onAccept} style={{flex:1}}>ELFOGAD</button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      <div className="app-container">
+        {gameState === 'menu' && (
+            <div className="menu-view">
+                <div className="glass-panel">
+                    <div className="menu-title">WORD MASTER</div>
+                    
+                    {!roomId ? (
+                      <>
+                        <div className="input-group">
+                          <label className="input-label">Játékos neved</label>
+                          <input className="modern-input" placeholder="Pl.: Anna" value={playerName} onChange={(e) => setPlayerName(e.target.value.toUpperCase())} />
+                        </div>
+
+                        <button className="play-btn" onClick={createRoom}>ÚJ SZOBA LÉTREHOZÁSA</button>
+
+                        <div style={{display:'flex', gap:'10px', marginTop:'15px', alignItems:'center'}}>
+                          <input className="modern-input" style={{marginBottom:0}} placeholder="KÓD" value={roomCodeInput} maxLength={4} onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())} />
+                          <button className="modern-btn active" onClick={joinRoom} style={{height:'100%'}}>CSATLAKOZÁS</button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{textAlign:'center', marginBottom:'15px'}}>
+                          <p style={{opacity:0.7, margin:0}}>Szoba kódja:</p>
+                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
+                        </div>
+
+                        {isHost && (
+                          <div className="input-group">
+                              <label className="input-label">Téma (Host beállítás)</label>
+                              <div className="option-grid-3">
+                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'luxus'})}>Luxus</button>
+                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'nordic'})}>Nordic</button>
+                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'cyber'})}>Cyber</button>
+                              </div>
+                          </div>
+                        )}
+
+                        <div className="input-group">
+                            <label className="input-label">Játékosok ({config.playerNames.length}/4)</label>
+                            <div style={{display:'flex', flexDirection:'column', gap:'5px'}}>
+                              {config.playerNames.map((name, i) => (
+                                  <div key={i} className="modern-input" style={{textAlign:'center', backgroundColor: 'rgba(234, 179, 8, 0.2)', borderColor: '#eab308'}}>{name}</div>
+                              ))}
+                            </div>
+                        </div>
+
+                        {isHost ? (
+                          <button className="play-btn" onClick={startMultiplayerGame}>JÁTÉK INDÍTÁSA ▶</button>
+                        ) : (
+                          <div style={{textAlign:'center', opacity:0.6, padding:'15px'}}>Várakozás a házigazdára...</div>
+                        )}
+                      </>
+                    )}
+                </div>
+            </div>
+        )}
+
+        {gameState === 'playing' && (
+            <>
+                <div className="game-header">
+                    {config.playerNames.map((name, i) => (
+                        <div key={i} className={`player-pill ${currentPlayer===i?'active':''}`}>
+                            <div style={{fontSize:'10px', opacity:0.7, textTransform:'uppercase'}}>{name}</div>
+                            <div style={{fontSize:'16px', fontWeight:'800'}}>{scores[i] || 0}</div>
+                        </div>
+                    ))}
+                </div>
+
+                <div className={`toast ${toastMsg.text?'show':''} ${toastMsg.type}`}>
+                    {toastMsg.text}
+                </div>
+
+                <div className="bottom-bar">
+                    {config.playerNames[currentPlayer] !== playerName ? (
+                        <div style={{ padding: '10px 16px', background: 'rgba(239, 68, 68, 0.9)', backdropFilter: 'blur(10px)', color: 'white', borderRadius: '50px', fontWeight: '800', border: '2px solid rgba(255,255,255,0.2)', pointerEvents:'auto', fontSize:'13px' }}>
+                            ⏳ Várakozás {config.playerNames[currentPlayer]} lépésére...
+                        </div>
+                    ) : (
+                        <>
+                            <button className="action-btn btn-glass" onClick={()=>gameRef.current?.recall()}>Vissza</button>
+                            <button className="action-btn btn-glass" onClick={()=>gameRef.current?.shuffle()}>Keverés</button>
+                            <button className="action-btn btn-primary" onClick={handleValidate} disabled={validating}>
+                                {validating ? '...' : 'LERAKÁS'}
+                            </button>
+                        </>
+                    )}
+                </div>
+            </>
+        )}
+      </div>
+    </>
+  );
 }
