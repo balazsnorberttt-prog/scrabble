@@ -4,14 +4,11 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { createClient } from '@supabase/supabase-js';
+import { db } from '../firebase'; 
+import { ref, set, onValue, get, update } from 'firebase/database';
 import gsap from 'gsap';
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL,
-  import.meta.env.VITE_SUPABASE_SUPABASE_ANON_KEY
-);
-
+// --- TÉMÁK ---
 const THEMES = {
   luxus: {
     name: "Royal Mahogany",
@@ -61,27 +58,27 @@ async function checkHungarianWordAPI(word: string) {
     const exists = Object.keys(data.query.pages)[0] !== "-1";
     if (exists) WORD_CACHE.add(cleanWord);
     return exists;
-  } catch (error) { return false; }
+  } catch (error) { return false; } 
 }
 
 export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   const roomIdRef = useRef<string>('');
-  const subscriptionsRef = useRef<any[]>([]);
-
+  
+  // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [toastMsg, setToastMsg] = useState({ text: '', type: '' });
   const [validating, setValidating] = useState(false);
-  const [popupData, setPopupData] = useState<any>(null);
-
+  const [popupData, setPopupData] = useState<any>(null); 
+  
   const [roomId, setRoomId] = useState('');
   const [playerName, setPlayerName] = useState('');
   const [isHost, setIsHost] = useState(false);
   const [roomCodeInput, setRoomCodeInput] = useState('');
-
+  
   const [config, setConfig] = useState({
     theme: 'luxus',
     boardType: 'normal',
@@ -91,6 +88,8 @@ export default function WordMasterGame() {
   const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
   const [globalTempData, setGlobalTempData] = useState<any[]>([]);
 
+  const prevBoardRef = useRef<string>('');
+
   useEffect(() => {
     const meta = document.createElement('meta');
     meta.name = 'viewport';
@@ -98,6 +97,8 @@ export default function WordMasterGame() {
     document.head.appendChild(meta);
     return () => { document.head.removeChild(meta); };
   }, []);
+
+  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
   const showToast = (msg: string, isError: boolean) => {
     setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
@@ -111,237 +112,139 @@ export default function WordMasterGame() {
     }
   }, [currentPlayer, playerName, config.playerNames]);
 
+  // ERŐSZAKOS TÁBLA-SZINKRONIZÁLÓ CIKLUS
   useEffect(() => {
-    if (gameState !== 'playing' || !gameRef.current) return;
-    gameRef.current.syncBoardFromFirebase(globalBoardData);
+    if (gameState !== 'playing') return;
+    
+    const serialized = JSON.stringify(globalBoardData);
+    if (serialized === prevBoardRef.current) return; 
+    prevBoardRef.current = serialized;
+    
+    const trySync = () => {
+        if (gameRef.current && gameRef.current.syncBoardFromFirebase) {
+            // A klónozás biztosítja, hogy a React ne törölje a memóriát véletlenül
+            const clonedData = JSON.parse(serialized);
+            gameRef.current.syncBoardFromFirebase(clonedData);
+        } else {
+            setTimeout(trySync, 200);
+        }
+    };
+    trySync();
   }, [globalBoardData, gameState]);
 
   useEffect(() => {
     if (gameRef.current && gameState === 'playing') {
-      gameRef.current.syncOpponentPlacements(globalTempData);
+        const clonedTemp = JSON.parse(JSON.stringify(globalTempData));
+        gameRef.current.syncOpponentPlacements(clonedTemp);
     }
   }, [globalTempData, gameState]);
 
+  // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
+    
+    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const roomRef = ref(db, `rooms/${newRoomId}`);
+    
+    await set(roomRef, {
+      status: 'lobby',
+      config: { ...config, playerNames: [playerName] },
+      players: [{ name: playerName, score: 0 }],
+      currentTurn: 0,
+      hostName: playerName,
+      boardData: JSON.stringify([]),
+      tempPlacements: JSON.stringify([]) 
+    });
 
-    const newRoomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
-
-    const { data: room, error: roomError } = await supabase
-      .from('game_rooms')
-      .insert([{
-        room_code: newRoomCode,
-        status: 'lobby',
-        host_id: playerName,
-        config: { theme: config.theme, boardType: config.boardType }
-      }])
-      .select('id')
-      .single();
-
-    if (roomError) return showToast('Hiba a szoba létrehozásakor!', true);
-
-    const { error: playerError } = await supabase
-      .from('room_players')
-      .insert([{
-        room_id: room.id,
-        player_name: playerName,
-        join_order: 0
-      }]);
-
-    if (playerError) return showToast('Hiba a játékos hozzáadásakor!', true);
-
-    const { error: turnError } = await supabase
-      .from('current_turn')
-      .insert([{
-        room_id: room.id,
-        current_player_index: 0,
-        turn_count: 0
-      }]);
-
-    if (turnError) return showToast('Hiba a fordulószámláló létrehozásakor!', true);
-
-    setRoomId(room.id);
+    setRoomId(newRoomId);
     setIsHost(true);
-    roomIdRef.current = room.id;
-    listenToRoom(room.id);
+    listenToRoom(newRoomId);
   };
 
   const joinRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
     if (roomCodeInput.length !== 4) return showToast('A kód 4 karakter hosszú!', true);
 
-    const { data: room, error: roomError } = await supabase
-      .from('game_rooms')
-      .select('id, status, config')
-      .eq('room_code', roomCodeInput)
-      .single();
+    const roomRef = ref(db, `rooms/${roomCodeInput}`);
+    const snapshot = await get(roomRef);
 
-    if (roomError || !room) return showToast('Nem létezik ilyen szoba!', true);
-    if (room.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
+    if (snapshot.exists()) {
+      const roomData = snapshot.val();
+      if (roomData.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
+      
+      const currentPlayers = roomData.players || [];
+      if (currentPlayers.length >= 4) return showToast('A szoba megtelt!', true);
 
-    const { data: players, error: playersError } = await supabase
-      .from('room_players')
-      .select('*')
-      .eq('room_id', room.id);
+      const updatedPlayers = [...currentPlayers, { name: playerName, score: 0 }];
+      await update(roomRef, { players: updatedPlayers });
 
-    if (players && players.length >= 4) return showToast('A szoba megtelt!', true);
-
-    const { error: insertError } = await supabase
-      .from('room_players')
-      .insert([{
-        room_id: room.id,
-        player_name: playerName,
-        join_order: players?.length || 0
-      }]);
-
-    if (insertError) return showToast('Hiba a csatlakozásnál!', true);
-
-    setRoomId(room.id);
-    setConfig(prev => ({ ...prev, ...room.config }));
-    roomIdRef.current = room.id;
-    listenToRoom(room.id);
+      setRoomId(roomCodeInput);
+      listenToRoom(roomCodeInput);
+    } else {
+      showToast('Nem létezik ilyen szoba!', true);
+    }
   };
 
-  const listenToRoom = (roomId: string) => {
-    subscriptionsRef.current.forEach(sub => sub.unsubscribe());
-    subscriptionsRef.current = [];
+  const listenToRoom = (id: string) => {
+    const roomRef = ref(db, `rooms/${id}`);
+    onValue(roomRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const playersData = data.players || [];
+        const names = playersData.map((p: any) => p.name);
+        const syncedScores = playersData.map((p: any) => p.score || 0);
 
-    // Valós idejű játékosok
-    const playersSub = supabase
-      .from('room_players')
-      .on('*', (payload) => {
-        loadRoomData(roomId);
-      })
-      .subscribe();
+        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
+        setScores(syncedScores);
+        setCurrentPlayer(data.currentTurn || 0);
 
-    // Valós idejű tábla
-    const boardSub = supabase
-      .from('board_state')
-      .on('*', (payload) => {
-        loadBoardState(roomId);
-      })
-      .subscribe();
+        if (data.boardData) {
+            try {
+                const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
+                setGlobalBoardData(parsedBoard);
+            } catch (e) {}
+        }
 
-    // Valós idejű szellem betűk
-    const tempSub = supabase
-      .from('temp_placements')
-      .on('*', (payload) => {
-        loadTempPlacements(roomId);
-      })
-      .subscribe();
-
-    // Valós idejű fordulóváltás
-    const turnSub = supabase
-      .from('current_turn')
-      .on('*', (payload) => {
-        loadTurnData(roomId);
-      })
-      .subscribe();
-
-    subscriptionsRef.current = [playersSub, boardSub, tempSub, turnSub];
-
-    loadRoomData(roomId);
-    loadBoardState(roomId);
-    loadTempPlacements(roomId);
-    loadTurnData(roomId);
-  };
-
-  const loadRoomData = async (roomId: string) => {
-    const { data: room } = await supabase
-      .from('game_rooms')
-      .select('status, config')
-      .eq('id', roomId)
-      .single();
-
-    const { data: players } = await supabase
-      .from('room_players')
-      .select('player_name, score')
-      .eq('room_id', roomId)
-      .order('join_order');
-
-    if (room && players) {
-      setConfig(prev => ({ ...prev, ...room.config, playerNames: players.map(p => p.player_name) }));
-      setScores(players.map(p => p.score || 0));
-
-      if (room.status === 'playing' && gameState !== 'playing') {
-        setGameState('playing');
-        setTimeout(() => {
-          if(gameRef.current) {
-            gameRef.current.updateConfig({ ...room.config, playerNames: players.map(p => p.player_name) });
-            gameRef.current.transitionToGameView();
-          }
-        }, 100);
+        if (data.tempPlacements) {
+            try {
+                const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
+                setGlobalTempData(parsedTemp);
+            } catch (e) {}
+        }
+        
+        if (data.status === 'playing' && gameState !== 'playing') {
+            setGameState('playing');
+            setTimeout(() => {
+                if(gameRef.current) {
+                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
+                    gameRef.current.transitionToGameView();
+                }
+            }, 100);
+        }
       }
-    }
-  };
-
-  const loadBoardState = async (roomId: string) => {
-    const { data: tiles } = await supabase
-      .from('board_state')
-      .select('row, col, character')
-      .eq('room_id', roomId);
-
-    if (tiles) {
-      setGlobalBoardData(tiles.map(t => ({ r: t.row, c: t.col, char: t.character })));
-    }
-  };
-
-  const loadTempPlacements = async (roomId: string) => {
-    const { data: temps } = await supabase
-      .from('temp_placements')
-      .select('row, col, character, player_name')
-      .eq('room_id', roomId);
-
-    if (temps) {
-      const filtered = temps.filter(t => t.player_name !== playerName);
-      setGlobalTempData(filtered.map(t => ({ r: t.row, c: t.col, char: t.character })));
-    }
-  };
-
-  const loadTurnData = async (roomId: string) => {
-    const { data: turn } = await supabase
-      .from('current_turn')
-      .select('current_player_index')
-      .eq('room_id', roomId)
-      .single();
-
-    if (turn) {
-      setCurrentPlayer(turn.current_player_index);
-    }
+    });
   };
 
   const startMultiplayerGame = async () => {
     if (!roomId) return;
-    await supabase
-      .from('game_rooms')
-      .update({ status: 'playing' })
-      .eq('id', roomId);
+    await update(ref(db, `rooms/${roomId}`), { status: 'playing' });
+  };
+
+  const backToMenu = () => {
+    setGameState('menu');
+    setRoomId('');
+    if(gameRef.current) gameRef.current.transitionToMenuView();
   };
 
   const onTempPlaceSync = (placements: any[]) => {
-    if (!roomIdRef.current) return;
-
-    supabase
-      .from('temp_placements')
-      .delete()
-      .eq('room_id', roomIdRef.current)
-      .eq('player_name', playerName);
-
-    if (placements.length > 0) {
-      supabase
-        .from('temp_placements')
-        .insert(
-          placements.map(p => ({
-            room_id: roomIdRef.current,
-            player_name: playerName,
-            row: p.r,
-            col: p.c,
-            character: p.char
-          }))
-        );
+    if (roomIdRef.current) {
+      update(ref(db, `rooms/${roomIdRef.current}`), { 
+          tempPlacements: JSON.stringify(placements) 
+      });
     }
   };
 
+  // --- 3D GAME ENGINE ---
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -354,7 +257,7 @@ export default function WordMasterGame() {
       specialMap = new Map();
       opponentTempTiles: any[] = [];
       onTempPlaceCallback: (placements: any[]) => void;
-
+      
       state = {
         rack: [] as any[],
         boardGrid: Array(15).fill(null).map(() => Array(15).fill(null)),
@@ -368,7 +271,7 @@ export default function WordMasterGame() {
         this.onTempPlaceCallback = syncCallback;
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 1, 100);
-        this.camera.position.set(25, 15, 25);
+        this.camera.position.set(25, 15, 25); 
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -403,9 +306,9 @@ export default function WordMasterGame() {
               this.currentBoardType = newConfig.boardType;
               this.updateThemeColors();
               this.loadTextures();
-              this.createTable();
+              this.createTable(); 
               this.generateBoardLayout(this.currentBoardType);
-              this.initBoard();
+              this.initBoard(); 
           }
       }
 
@@ -417,10 +320,10 @@ export default function WordMasterGame() {
       transitionToGameView() {
         this.controls.autoRotate = false;
         this.controls.enabled = false;
-
+        
         const aspect = window.innerWidth / window.innerHeight;
-        const targetY = aspect < 1 ? 34 : 24;
-        const targetZ = aspect < 1 ? 22 : 16;
+        const targetY = aspect < 1 ? 34 : 24; 
+        const targetZ = aspect < 1 ? 22 : 16; 
 
         gsap.to(this.camera.position, {
             x: 0, y: targetY, z: targetZ, duration: 2, ease: "power3.inOut",
@@ -454,11 +357,11 @@ export default function WordMasterGame() {
         const cvs = document.createElement('canvas'); cvs.width = 1024; cvs.height = 1024;
         const ctx = cvs.getContext('2d')!;
         const grd = ctx.createRadialGradient(512, 512, 100, 512, 512, 900);
-        grd.addColorStop(0, this.activeTheme.tableParams.color1);
-        grd.addColorStop(1, this.activeTheme.tableParams.color2);
+        grd.addColorStop(0, this.activeTheme.tableParams.color1); 
+        grd.addColorStop(1, this.activeTheme.tableParams.color2); 
         ctx.fillStyle = grd; ctx.fillRect(0,0,1024,1024);
         this.tableTexture = new THREE.CanvasTexture(cvs);
-
+        
         const cvsW = document.createElement('canvas'); cvsW.width = 512; cvsW.height = 512;
         const ctxW = cvsW.getContext('2d')!;
         ctxW.fillStyle = this.activeTheme.woodColor; ctxW.fillRect(0,0,512,512);
@@ -494,16 +397,19 @@ export default function WordMasterGame() {
         return { lines:[], color: this.activeTheme.boardField };
       }
 
+      // JAVÍTOTT TEXTÚRA GENERÁLÁS MOBILRA
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
+        
         if (this.textureCache[id]) return this.textureCache[id];
 
-        const size = 256;
-        const cvs = document.createElement('canvas');
+        const size = 256; 
+        const cvs = document.createElement('canvas'); 
         cvs.width = size; cvs.height = size;
         const ctx = cvs.getContext('2d')!;
 
         if (isTile) {
+            const grd = ctx.createLinearGradient(0,0,size,size);
             ctx.fillStyle = '#fceabb'; ctx.fillRect(0,0,size,size);
         } else {
             ctx.fillStyle = '#' + new THREE.Color(color!).getHexString(); ctx.fillRect(0,0,size,size);
@@ -512,7 +418,7 @@ export default function WordMasterGame() {
 
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         let textColor = isTile ? '#111' : (this.activeTheme.isDark ? '#fff' : '#111');
-
+        
         if (isTile) {
             ctx.fillStyle = textColor; ctx.font = 'bold 140px "Arial", sans-serif';
             ctx.fillText(lines[0], size/2, size/2 - 12);
@@ -521,9 +427,10 @@ export default function WordMasterGame() {
             ctx.fillStyle = textColor; ctx.font = `900 32px "Arial", sans-serif`;
             lines.forEach((line, i) => { ctx.fillText(line, size/2, 110 + i * 40); });
         }
-
+        
         const texture = new THREE.CanvasTexture(cvs);
-        texture.needsUpdate = true;
+        texture.needsUpdate = true; // KÖTELEZŐ IOS/ANDROID MIATT
+        
         this.textureCache[id] = texture;
         return texture;
       }
@@ -534,7 +441,7 @@ export default function WordMasterGame() {
         const group = new THREE.Group(); group.name = "boardGroup";
 
         const frameGeo = new RoundedBoxGeometry(17.2, 1.0, 17.2, 4, 0.2);
-        const frameMat = new THREE.MeshPhysicalMaterial({ map: this.woodTexture, color: this.activeTheme.frameColor, roughness: 0.5 });
+        const frameMat = new THREE.MeshStandardMaterial({ map: this.woodTexture, color: this.activeTheme.frameColor, roughness: 0.5 });
         const frame = new THREE.Mesh(frameGeo, frameMat);
         frame.position.y = -0.55; frame.receiveShadow = true; group.add(frame);
 
@@ -543,8 +450,8 @@ export default function WordMasterGame() {
             for(let c=0; c<15; c++) {
                 const info = this.getCellInfo(r, c);
                 const tex = this.getTexture(info.lines, info.color, false);
-                const matTop = new THREE.MeshPhysicalMaterial({ map: tex, roughness: 0.8 });
-                const matBody = new THREE.MeshPhysicalMaterial({ color: info.color });
+                const matTop = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 });
+                const matBody = new THREE.MeshStandardMaterial({ color: info.color });
                 const cell = new THREE.Mesh(cellGeo, [matBody, matBody, matTop, matBody, matBody, matBody]);
                 cell.position.set((c-7)*1.05, 0.05, (r-7)*1.05); cell.userData = { isSlot: true, r, c }; group.add(cell);
             }
@@ -552,16 +459,17 @@ export default function WordMasterGame() {
         this.scene.add(group);
       }
 
+      // KICSERÉLTÜK MESH_STANDARD_MATERIAL-RA A BIZTOS MEGJELENÉSÉRT
       createTileMesh(char: string) {
         const geo = new RoundedBoxGeometry(0.95, 0.25, 0.95, 4, 0.08);
         const tex = this.getTexture([char], null, true);
-        const matTop = new THREE.MeshPhysicalMaterial({ map: tex, color: 0xffffff, roughness: 0.2 });
-        const matBody = new THREE.MeshPhysicalMaterial({ color: 0xccaa88 });
+        const matTop = new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff, roughness: 0.4 });
+        const matBody = new THREE.MeshStandardMaterial({ color: 0xccaa88 });
         const mesh = new THREE.Mesh(geo, [matBody, matBody, matTop, matBody, matBody, matBody]);
         mesh.castShadow = true; mesh.userData = { isTile: true, char: char };
         return mesh;
       }
-
+      
       fillRack() {
         while(this.state.rack.length < 7) {
             const char = HUNGARIAN_LETTERS[Math.floor(Math.random() * HUNGARIAN_LETTERS.length)];
@@ -575,7 +483,7 @@ export default function WordMasterGame() {
       }
 
       arrangeRack() {
-        const spacing = window.innerWidth < 600 ? 0.95 : 1.1;
+        const spacing = window.innerWidth < 600 ? 0.95 : 1.1; 
         this.state.rack.forEach((tile, i) => {
             if(tile.userData.isPlaced) return;
             const x = (i - (this.state.rack.length-1)/2) * spacing;
@@ -598,29 +506,29 @@ export default function WordMasterGame() {
         el.style.touchAction = 'none';
 
         const onPointerDown = (e: PointerEvent) => {
-            if (!this.state.isMyTurn) return;
-
+            if (!this.state.isMyTurn) return; 
+            
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
             this.raycaster.setFromCamera(this.mouse, this.camera);
             const hits = this.raycaster.intersectObjects(this.scene.children, true);
-
+            
             const hitTile = hits.find((i:any)=>i.object.userData.isTile);
             if(hitTile) {
                 const t = hitTile.object;
                 const fixed = this.state.logicalBoard.some(lb => lb.r === t.userData.boardR && lb.c === t.userData.boardC) && !this.state.placedThisTurn.some(p=>p.tile===t);
-
+                
                 if(!fixed) {
-                    if (e.cancelable) e.preventDefault();
-
+                    if (e.cancelable) e.preventDefault(); 
+                    
                     if(this.selectedTile && this.selectedTile !== t && !this.selectedTile.userData.isPlaced) {
-                        gsap.to(this.selectedTile.position, {y:1.2, duration:0.2});
+                        gsap.to(this.selectedTile.position, {y:1.2, duration:0.2}); 
                     }
-                    this.dragging = t;
-                    this.selectedTile = t;
-                    this.controls.enabled = false;
-                    gsap.to(t.position, {y:3, duration:0.2});
+                    this.dragging = t; 
+                    this.selectedTile = t; 
+                    this.controls.enabled = false; 
+                    gsap.to(t.position, {y:3, duration:0.2}); 
                     gsap.to(t.rotation, {x:0, z:0, duration:0.2});
                 }
                 return;
@@ -633,15 +541,15 @@ export default function WordMasterGame() {
                 this.selectedTile = null;
             }
             if(!hitTile && !hitSlot && this.selectedTile) {
-                this.returnToRack(this.selectedTile);
+                this.returnToRack(this.selectedTile); 
                 this.selectedTile = null;
             }
         };
 
         const onPointerMove = (e: PointerEvent) => {
             if(!this.dragging || !this.state.isMyTurn) return;
-            if (e.cancelable) e.preventDefault();
-
+            if (e.cancelable) e.preventDefault(); 
+            
             const rect = el.getBoundingClientRect();
             this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
             this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -664,14 +572,14 @@ export default function WordMasterGame() {
                 this.returnToRack(this.dragging);
                 this.selectedTile = null;
             }
-            this.dragging = null;
-            this.controls.enabled = true;
+            this.dragging = null; 
+            this.controls.enabled = true; 
         };
 
         el.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
         window.addEventListener('pointerup', onPointerUp);
-        window.addEventListener('pointercancel', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp); 
         window.addEventListener('resize', this.onResize);
       }
 
@@ -684,7 +592,7 @@ export default function WordMasterGame() {
             this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
             this.state.placedThisTurn.push({tile, r, c});
             tile.userData.isPlaced = true;
-            this.triggerTempSync();
+            this.triggerTempSync(); 
         } else this.returnToRack(tile);
       }
 
@@ -692,7 +600,7 @@ export default function WordMasterGame() {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
         tile.userData.isPlaced=false; this.arrangeRack();
-        this.triggerTempSync();
+        this.triggerTempSync(); 
       }
 
       async validateTurn() {
@@ -709,7 +617,7 @@ export default function WordMasterGame() {
 
         if (isHoriz) {
             const r = placed[0].r;
-            placed.sort((a,b) => a.c - b.c);
+            placed.sort((a,b) => a.c - b.c); 
             let startC = placed[0].c;
             while(startC > 0 && (this.state.boardGrid[r][startC - 1] !== null || this.state.logicalBoard.some(lb => lb.r === r && lb.c === startC - 1))) startC--;
             let endC = placed[placed.length-1].c;
@@ -724,9 +632,9 @@ export default function WordMasterGame() {
                     else return { success: false, msg: "Lyukas szó!" };
                 }
             }
-        } else {
+        } else { 
             const c = placed[0].c;
-            placed.sort((a,b) => a.r - b.r);
+            placed.sort((a,b) => a.r - b.r); 
             let startR = placed[0].r;
             while(startR > 0 && (this.state.boardGrid[startR - 1][c] !== null || this.state.logicalBoard.some(lb => lb.r === startR - 1 && lb.c === c))) startR--;
             let endR = placed[placed.length-1].r;
@@ -750,7 +658,7 @@ export default function WordMasterGame() {
             this.state.boardGrid[p.r][p.c] = p.tile;
             p.tile.userData.boardR = p.r;
             p.tile.userData.boardC = p.c;
-
+            
             this.state.logicalBoard = this.state.logicalBoard.filter(lb => !(lb.r === p.r && lb.c === p.c));
             this.state.logicalBoard.push({ r: p.r, c: p.c, char: p.tile.userData.char });
 
@@ -764,13 +672,12 @@ export default function WordMasterGame() {
       }
 
       getBoardSnapshot() {
-        return this.state.logicalBoard;
+        // Ez egy tiszta adat másolat, amit semmilyen böngésző nem tud tönkretenni
+        return JSON.parse(JSON.stringify(this.state.logicalBoard));
       }
 
       syncBoardFromFirebase(boardData: any[]) {
-        if (!boardData || boardData.length === 0) return;
-
-        this.state.logicalBoard = [...boardData];
+        this.state.logicalBoard = boardData;
         const incomingMap = new Map();
         boardData.forEach(item => incomingMap.set(`${item.r}_${item.c}`, item.char));
 
@@ -784,15 +691,15 @@ export default function WordMasterGame() {
                         if (existingTile) this.scene.remove(existingTile);
                         const newTile = this.createTileMesh(incomingChar);
                         newTile.position.set((c - 7) * 1.05, 0.18, (r - 7) * 1.05);
-                        newTile.rotation.set(0, 0, 0);
+                        newTile.rotation.set(0, 0, 0); // KÖTELEZŐ: visszaforgatja a betűt
                         newTile.userData.boardR = r;
                         newTile.userData.boardC = c;
-                        newTile.userData.isPlaced = true;
                         this.scene.add(newTile);
                         this.state.boardGrid[r][c] = newTile;
+                        newTile.userData.isPlaced = true;
                     }
                 } else {
-                    if (existingTile && !this.state.placedThisTurn.some(p => p.tile === existingTile)) {
+                    if (existingTile) {
                         this.scene.remove(existingTile);
                         this.state.boardGrid[r][c] = null;
                     }
@@ -802,31 +709,21 @@ export default function WordMasterGame() {
       }
 
       syncOpponentPlacements(placements: any[]) {
-        const newTempMap = new Map();
-        placements.forEach(p => newTempMap.set(`${p.r}_${p.c}`, p.char));
-
-        this.opponentTempTiles.forEach((tile: any) => {
-          const key = `${tile.userData.r}_${tile.userData.c}`;
-          if (!newTempMap.has(key)) {
-            this.scene.remove(tile);
-          }
-        });
-
+        this.opponentTempTiles.forEach((t: any) => this.scene.remove(t));
         this.opponentTempTiles = [];
 
+        if (this.state.isMyTurn) return; 
+
         placements.forEach(p => {
-            const alreadyPlaced = this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c);
-            if (!alreadyPlaced) {
+            if (!this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c)) {
                 const mesh = this.createTileMesh(p.char);
-                mesh.userData.r = p.r;
-                mesh.userData.c = p.c;
-                mesh.material.forEach((mat: any) => {
-                    mat.transparent = true;
-                    mat.opacity = 0.6;
-                    if(mat.color) mat.color.setHex(0xcccccc);
+                mesh.material.forEach((mat: any) => { 
+                    mat.transparent = true; 
+                    mat.opacity = 0.5; 
+                    if(mat.color) mat.color.setHex(0xaaaaaa); 
                 });
                 mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
-                mesh.rotation.set(0, 0, 0);
+                mesh.rotation.set(0,0,0);
                 this.scene.add(mesh);
                 this.opponentTempTiles.push(mesh);
             }
@@ -853,26 +750,27 @@ export default function WordMasterGame() {
           this.camera.aspect = window.innerWidth / window.innerHeight;
           this.camera.updateProjectionMatrix();
           this.renderer.setSize(window.innerWidth, window.innerHeight);
-          this.arrangeRack();
+          this.arrangeRack(); 
       }
     }
 
     const gameInstance = new Game(containerRef.current, onTempPlaceSync);
     gameRef.current = gameInstance;
-
+    
     return () => {
         gameInstance.dispose();
         gameRef.current = null;
     };
   }, []);
 
+  // --- LERAKÁS ÉS API ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
-
+    
     const check = await gameRef.current.validateTurn();
-
-    if(check.success === false) {
+    
+    if(check.success === false) { 
         showToast(check.msg, true);
         setValidating(false);
         return;
@@ -887,7 +785,7 @@ export default function WordMasterGame() {
         setPopupData({
             word: mainWord,
             onAccept: () => {
-                WORD_CACHE.add(mainWord);
+                WORD_CACHE.add(mainWord); 
                 completeTurn(mainWord, placed);
                 setPopupData(null);
             },
@@ -902,68 +800,53 @@ export default function WordMasterGame() {
 
   const completeTurn = async (word: string, placed: any[]) => {
     const pts = word.length * 10;
+    
+    // 1. Lefixáljuk a betűket a saját 3D táblánkon
     gameRef.current.finalizeTurn(placed, pts);
-
+    
+    // 2. Kiolvassuk a TISZTA ADATOT
     const boardSnapshot = gameRef.current.getBoardSnapshot();
-
+    
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
+    const newPlayers = config.playerNames.map((n, i) => ({ 
+        name: n, 
+        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0) 
+    }));
 
     try {
-        placed.forEach(async (p) => {
-            await supabase
-              .from('board_state')
-              .insert([{
-                room_id: roomId,
-                row: p.r,
-                col: p.c,
-                character: p.tile.userData.char,
-                player_name: playerName
-              }]);
+        // 3. Felküldjük a Firebase-be (Ezt a Laptop azonnal le fogja reagálni!)
+        await update(ref(db, `rooms/${roomId}`), { 
+            currentTurn: nextTurn, 
+            players: newPlayers,
+            boardData: JSON.stringify(boardSnapshot),
+            tempPlacements: JSON.stringify([]) 
         });
-
-        await supabase
-          .from('temp_placements')
-          .delete()
-          .eq('room_id', roomId);
-
-        await supabase
-          .from('current_turn')
-          .update({ current_player_index: nextTurn })
-          .eq('room_id', roomId);
-
-        const newScores = [...scores];
-        newScores[currentPlayer] = (newScores[currentPlayer] || 0) + pts;
-
-        await supabase
-          .from('room_players')
-          .update({ score: newScores[currentPlayer] })
-          .eq('player_name', playerName);
-
         showToast(`Kész! +${pts}`, false);
     } catch(err) {
         showToast('Hálózati hiba!', true);
     }
-
-    setTimeout(() => {
-        if (gameRef.current) gameRef.current.fillRack();
-        setValidating(false);
+    
+    setTimeout(() => { 
+        if (gameRef.current) gameRef.current.fillRack(); 
+        setValidating(false); 
     }, 800);
   };
 
   return (
     <>
       <style jsx global>{`
-        body {
-            margin: 0;
-            overflow: hidden;
-            font-family: 'Inter', sans-serif;
+        /* MOBIL OPTIMALIZÁCIÓ */
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: 'Inter', sans-serif; 
             background: #000;
-            touch-action: none;
+            touch-action: none; 
             -webkit-user-select: none;
             user-select: none;
         }
         .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
-
+        
         .popup-overlay {
             position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
             display: flex; align-items: center; justify-content: center; pointer-events: auto; z-index: 100;
@@ -974,31 +857,31 @@ export default function WordMasterGame() {
             text-align: center; color: white; box-shadow: 0 0 50px rgba(255, 204, 0, 0.3);
             width: 90%; max-width: 350px;
         }
-
+        
         .glass-panel {
             pointer-events: auto; background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 24px; padding: 25px 20px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); color: white; 
             width: 92%; max-width: 400px; box-sizing: border-box;
         }
         .menu-title { font-size: 32px; font-weight: 900; text-align: center; margin-bottom: 20px; background: linear-gradient(to right, #facc15, #f59e0b); -webkit-background-clip: text; color: transparent; }
-
+        
         .modern-btn { padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; cursor: pointer; transition: all 0.2s; font-weight: 600; font-size: 14px;}
         .modern-btn.active { background: white; color: black; border-color: white; }
         .play-btn { width: 100%; margin-top: 15px; padding: 16px; border-radius: 16px; border: none; background: linear-gradient(135deg, #eab308, #ca8a04); color: white; font-size: 16px; font-weight: 800; cursor: pointer; transition: all 0.3s; }
-
+        
         .game-header { position: absolute; top: 0; left: 0; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 10px; width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); backdrop-filter: blur(5px); z-index: 20; }
         .player-pill { background: rgba(0,0,0,0.6); padding: 6px 16px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.1); color: white; text-align: center; }
         .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
-
+        
         .bottom-bar { position: absolute; bottom: 25px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; pointer-events: none; padding: 0 10px; box-sizing: border-box; z-index: 20; }
         .action-btn { pointer-events: auto; padding: 12px 18px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 13px; backdrop-filter: blur(10px); }
         .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
         .btn-primary { background: #10b981; color: white; }
-
+        
         .toast { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 12px 20px; border-radius: 50px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 1000; text-align: center; width: max-content; max-width: 90%; }
         .toast.show { opacity: 1; }
-
+        
         .input-group { margin-bottom: 15px; }
         .input-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7; margin-bottom: 5px; }
         .option-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
@@ -1008,10 +891,10 @@ export default function WordMasterGame() {
             .menu-title { font-size: 26px; }
             .glass-panel { padding: 20px 15px; }
             .play-btn { padding: 14px; font-size: 14px; }
-            .bottom-bar { bottom: 35px; }
+            .bottom-bar { bottom: 35px; } 
         }
       `}</style>
-
+      
       <div ref={containerRef} style={{position:'fixed', inset:0, zIndex:-1}} />
 
       {popupData && (
@@ -1032,7 +915,7 @@ export default function WordMasterGame() {
             <div style={{height:'100%', display:'flex', alignItems:'center', justifyContent:'center'}}>
                 <div className="glass-panel">
                     <div className="menu-title">WORD MASTER</div>
-
+                    
                     {!roomId ? (
                       <>
                         <div className="input-group">
@@ -1051,16 +934,16 @@ export default function WordMasterGame() {
                       <>
                         <div style={{textAlign:'center', marginBottom:'15px'}}>
                           <p style={{opacity:0.7, margin:0}}>Szoba kódja:</p>
-                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId.slice(0, 4).toUpperCase()}</h2>
+                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
                         </div>
 
                         {isHost && (
                           <div className="input-group">
                               <label className="input-label">Téma (Host beállítás)</label>
                               <div className="option-grid-3">
-                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'luxus', boardType:config.boardType}}).eq('id', roomId)}>Luxus</button>
-                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'nordic', boardType:config.boardType}}).eq('id', roomId)}>Nordic</button>
-                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'cyber', boardType:config.boardType}}).eq('id', roomId)}>Cyber</button>
+                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'luxus'})}>Luxus</button>
+                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'nordic'})}>Nordic</button>
+                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'cyber'})}>Cyber</button>
                               </div>
                           </div>
                         )}
