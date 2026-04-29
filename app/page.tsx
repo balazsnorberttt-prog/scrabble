@@ -1,5 +1,5 @@
 'use client';
-
+import './globals.css';
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -31,7 +31,6 @@ const THEMES = {
 };
 
 // --- MAGYAR SCRABBLE BETŰKÉSZLET ÉS PONTOK ---
-// A hivataloshoz közelítő, egykarakteres megvalósítás
 const LETTER_DEF = {
     'A': { count: 6, value: 1 }, 'E': { count: 6, value: 1 }, 'K': { count: 6, value: 1 }, 'T': { count: 5, value: 1 },
     'Á': { count: 4, value: 1 }, 'L': { count: 4, value: 1 }, 'N': { count: 4, value: 1 }, 'R': { count: 4, value: 1 },
@@ -44,13 +43,11 @@ const LETTER_DEF = {
     'Ő': { count: 1, value: 7 }, 'Ú': { count: 1, value: 7 }, 'Ű': { count: 1, value: 7 }
 };
 
-// Zsák generálása
 function generateInitialBag() {
     let bag: string[] = [];
     Object.entries(LETTER_DEF).forEach(([letter, data]) => {
         for (let i = 0; i < data.count; i++) bag.push(letter);
     });
-    // Fisher-Yates keverés
     for (let i = bag.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [bag[i], bag[j]] = [bag[j], bag[i]];
@@ -78,7 +75,6 @@ export default function WordMasterGame() {
     const gameRef = useRef<any>(null);
     const roomIdRef = useRef<string>('');
 
-    // --- ÁLLAPOTOK ---
     const [gameState, setGameState] = useState('menu');
     const [scores, setScores] = useState<number[]>([]);
     const [currentPlayer, setCurrentPlayer] = useState(0);
@@ -92,10 +88,9 @@ export default function WordMasterGame() {
 
     const [config, setConfig] = useState({ theme: 'luxus', boardType: 'normal', playerNames: [] as string[] });
 
-    // Globális adatszinkron
     const [globalBoardData, setGlobalBoardData] = useState<any[]>([]);
     const [globalTempData, setGlobalTempData] = useState<any[]>([]);
-    const [globalLetterBag, setGlobalLetterBag] = useState<string[]>([]); // VÉGES ZSÁK
+    const [globalLetterBag, setGlobalLetterBag] = useState<string[]>([]);
 
     useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
 
@@ -104,11 +99,10 @@ export default function WordMasterGame() {
         setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
     };
 
-    // --- MULTIPLAYER LOGIKA ---
     const createRoom = async () => {
         if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
         const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const initialBag = generateInitialBag(); // Legeneráljuk a teljes készletet
+        const initialBag = generateInitialBag(); 
         
         await set(ref(db, `rooms/${newRoomId}`), {
             host: playerName,
@@ -161,17 +155,14 @@ export default function WordMasterGame() {
                 setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
                 setScores(syncedScores);
                 setCurrentPlayer(data.currentTurn || 0);
-                
                 if (data.letterBag) setGlobalLetterBag(data.letterBag);
 
-                // Tábla frissítése
                 if (data.boardData && gameRef.current) {
                     const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
                     gameRef.current.syncBoardFromFirebase(parsedBoard);
                     setGlobalBoardData(parsedBoard);
                 }
 
-                // Szellem betűk
                 if (data.tempPlacements && gameRef.current) {
                     const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
                     gameRef.current.syncOpponentPlacements(parsedTemp);
@@ -192,11 +183,11 @@ export default function WordMasterGame() {
         return () => unsub();
     }, [roomId, gameState]);
 
+    // --- AZONNALI 3D MOTOR INDÍTÁS A HÁTTÉRBEN (MENÜHÖZ) ---
     useEffect(() => {
-        if (gameState === 'playing' && containerRef.current && !gameRef.current) {
+        if (containerRef.current && !gameRef.current) {
             gameRef.current = new GameEngine(containerRef.current, config);
             
-            // Ha a mi körünk van a kezdetekkor, és üres a rack, húzzunk betűt a zsákból
             gameRef.current.onNeedsLetters = (count: number) => {
                 let currentBag = [...globalLetterBag];
                 const drawn = currentBag.splice(0, count);
@@ -210,7 +201,7 @@ export default function WordMasterGame() {
                 }
             };
         }
-    }, [gameState]);
+    }, []); // Üres array: azonnal lefut, betölt a 3D asztal a menü mögé!
 
     // Turn Update
     useEffect(() => {
@@ -218,7 +209,6 @@ export default function WordMasterGame() {
             const isMyTurnNow = config.playerNames[currentPlayer] === playerName;
             gameRef.current.state.isMyTurn = isMyTurnNow;
             
-            // Ha ránk kerül a sor és kevesebb mint 7 betűnk van, feltöltjük
             if (isMyTurnNow && gameRef.current.state.rack.length < 7) {
                  const needed = 7 - gameRef.current.state.rack.length;
                  const newLetters = gameRef.current.onNeedsLetters(needed);
@@ -245,7 +235,6 @@ export default function WordMasterGame() {
                 return showToast(error || 'Érvénytelen lépés!', true);
             }
             
-            // Sikeres lerakás véglegesítése
             gameRef.current.finalizeTurn();
             
             const boardSnapshot = gameRef.current.getBoardSnapshot();
@@ -274,50 +263,8 @@ export default function WordMasterGame() {
         }
     };
 
-
     return (
         <div className="app-container">
-            <style>{`
-                :root { --glass-bg: rgba(255, 255, 255, 0.1); --glass-border: rgba(255, 255, 255, 0.2); }
-                body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background: #000; touch-action: none; overscroll-behavior: none; user-select: none; -webkit-user-select: none; }
-                .app-container { position: fixed; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; }
-                
-                /* MOBILRA OPTIMALIZÁLT MENÜ */
-                .menu-view { 
-                    position: absolute; inset: 0; z-index: 50; display: flex; flex-direction: column; 
-                    justify-content: flex-start; /* Fentebb kezdődik a tartalom */
-                    align-items: center; 
-                    padding-top: 15dvh; /* dvh a mobil billentyűzet miatt */
-                    height: 100dvh; overflow-y: auto; 
-                    background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); pointer-events: auto;
-                }
-                
-                .glass-panel { background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 24px; padding: 40px; text-align: center; color: white; width: 90%; max-width: 400px; box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
-                .menu-title { font-size: 32px; font-weight: 900; margin-bottom: 30px; letter-spacing: 2px; text-transform: uppercase; }
-                .input-field { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid var(--glass-border); background: rgba(0,0,0,0.3); color: white; margin-bottom: 15px; font-size: 16px; outline: none; box-sizing: border-box; text-align: center;}
-                .input-field:focus { border-color: #10b981; }
-                
-                .play-btn { width: 100%; padding: 16px; border-radius: 12px; border: none; font-weight: 800; font-size: 16px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; transition: transform 0.2s; }
-                .play-btn:active { transform: scale(0.96); }
-                .btn-green { background: #10b981; color: white; }
-                .btn-blue { background: #3b82f6; color: white; }
-                
-                /* HUD ÉS GOMBOK */
-                .top-hud { position: absolute; top: 20px; left: 0; right: 0; display: flex; justify-content: center; gap: 15px; z-index: 20; }
-                .player-pill { background: rgba(0,0,0,0.5); border: 1px solid var(--glass-border); padding: 8px 16px; border-radius: 20px; color: white; text-align: center; min-width: 80px; transition: all 0.3s; }
-                .player-pill.active { background: rgba(234, 179, 8, 0.8); border-color: #fde047; transform: scale(1.05); }
-                
-                .bottom-bar { position: absolute; bottom: 25px; width: 100%; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; pointer-events: none; padding: 0 10px; box-sizing: border-box; z-index: 20; }
-                .action-btn { pointer-events: auto; padding: 12px 18px; border-radius: 14px; border: none; font-weight: 700; cursor: pointer; font-size: 14px; backdrop-filter: blur(10px); }
-                .btn-glass { background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); }
-                .btn-primary { background: #10b981; color: white; }
-                
-                .toast { position: fixed; top: 80px; left: 50%; transform: translateX(-50%); padding: 12px 24px; border-radius: 50px; font-weight: bold; color: white; z-index: 100; animation: fadeIn 0.3s ease; }
-                .toast.error { background: #ef4444; } .toast.success { background: #10b981; }
-                
-                @keyframes fadeIn { from { opacity: 0; transform: translate(-50%, -20px); } to { opacity: 1; transform: translate(-50%, 0); } }
-            `}</style>
-
             <div ref={containerRef} style={{ position: 'absolute', inset: 0, pointerEvents: gameState === 'playing' ? 'auto' : 'none' }} />
 
             {gameState === 'menu' && (
@@ -467,7 +414,6 @@ class GameEngine {
             this.currentBoardType = newConfig.boardType;
             this.scene.background = new THREE.Color(this.activeTheme.bgBase);
             this.scene.fog = new THREE.FogExp2(this.activeTheme.fogColor, 0.015);
-            // Ha újraépül a tábla, utána szinkronizáljuk a betűket
             this.createTable(); 
             this.generateBoardLayout(this.currentBoardType);
             this.initBoard(); 
@@ -494,35 +440,75 @@ class GameEngine {
         });
     }
 
-    /* =========================================================
-       IDE JÖNNEK A KORÁBBI TÁBLA- ÉS 3D MODELL GENERÁLÓ FÜGGVÉNYEID:
-       - initLighting()
-       - createTable()
-       - generateBoardLayout(type)
-       - initBoard()
-       - createTileMesh(char)
-       Ezeket kérlek másold át a korábbi kódodból, 
-       hogy a kinézet (szöveg rajzolás stb.) teljesen megegyezzen!
-       ========================================================= */
-       
-    initLighting() { /* Korábbi kódod */ }
-    createTable() { /* Korábbi kódod */ }
-    generateBoardLayout(type: string) { /* Korábbi kódod */ }
-    initBoard() { /* Korábbi kódod */ }
+    // --- SAJÁT 3D GENERÁLÓ FÜGGVÉNYEK HELYE ---
+    // Ide nyugodtan beillesztheted a korábbi initLighting, createTable, stb. kódodat,
+    // ha voltak benne egyedi anyagok/textúrák. Ha nem, ezek az alapok is tökéletesek!
+
+    initLighting() { 
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        this.scene.add(ambient);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        this.scene.add(dirLight);
+    }
     
-    // A BETŰ LÉTREHOZÁSÁHOZ EGY EGYSZERŰSÍTETT PÉLDA (cseréld a tiédre!):
+    createTable() { 
+        const geo = new THREE.BoxGeometry(20, 1, 20);
+        const mat = new THREE.MeshStandardMaterial({ color: this.activeTheme.woodColor });
+        const table = new THREE.Mesh(geo, mat);
+        table.position.y = -0.5;
+        table.receiveShadow = true;
+        this.scene.add(table);
+    }
+    
+    generateBoardLayout(type: string) { 
+        // Egyszerűsített szorzó kiosztás példa
+        this.specialMap.set("7_7", "start");
+        this.specialMap.set("0_0", "tw"); this.specialMap.set("0_14", "tw");
+    }
+    
+    initBoard() { 
+        for(let r=0; r<15; r++) {
+            for(let c=0; c<15; c++) {
+                const geo = new THREE.BoxGeometry(1, 0.1, 1);
+                const mat = new THREE.MeshStandardMaterial({ color: this.activeTheme.boardField });
+                const mesh = new THREE.Mesh(geo, mat) as any;
+                mesh.position.set((c - 7) * 1.05, 0.05, (r - 7) * 1.05);
+                mesh.userData = { isSlot: true, r, c };
+                mesh.receiveShadow = true;
+                this.scene.add(mesh);
+            }
+        }
+    }
+    
     createTileMesh(char: string) {
         const geo = new RoundedBoxGeometry(0.9, 0.2, 0.9, 4, 0.1);
-        const mat = new THREE.MeshStandardMaterial({ color: 0xffddaa });
+        
+        // Canvas textúra rajzolása a betűnek
+        const canvas = document.createElement('canvas');
+        canvas.width = 128; canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            ctx.fillStyle = '#f3e5ab'; ctx.fillRect(0, 0, 128, 128);
+            ctx.fillStyle = '#000000'; 
+            ctx.font = 'bold 70px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(char, 64, 64);
+            
+            // Pontérték a sarokba
+            const val = LETTER_DEF[char as keyof typeof LETTER_DEF]?.value || 1;
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText(val.toString(), 100, 100);
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        const mat = new THREE.MeshStandardMaterial({ map: tex, color: 0xffffff });
         const mesh = new THREE.Mesh(geo, mat) as any;
         mesh.userData = { isTile: true, char: char, isPlaced: false };
         mesh.castShadow = true;
         
-        // Itt jönne a CanvasText logika, ami rárajzolja a betűt és a számot (LETTER_DEF[char].value)
-        
         return mesh;
     }
-
+    // ------------------------------------------
 
     arrangeRack() {
         const spacing = window.innerWidth < 600 ? 0.95 : 1.1; 
@@ -552,9 +538,8 @@ class GameEngine {
             const clientX = isTouch ? e.touches[0].clientX : e.clientX;
             let clientY = isTouch ? e.touches[0].clientY : e.clientY;
 
-            // FAT-FINGER FIX: Mobilos húzásnál feljebb toljuk a kamerához képest a tárgyat
             if (isTouch && this.dragging && e.type === 'touchmove') {
-                clientY += 60; 
+                clientY += 60; // FAT-FINGER FIX: feljebb tolja az ujj fölé
             }
 
             const rect = el.getBoundingClientRect();
@@ -583,7 +568,6 @@ class GameEngine {
                 return;
             }
 
-            // TAP-TO-PLACE: Ha kiválasztottunk egy betűt, és üres mezőre bökünk
             if(hitSlot && this.selectedTile && (!hitTile || hitTile.object === this.selectedTile)) {
                 if (e.cancelable) e.preventDefault();
                 const r = hitSlot.object.userData.r; 
@@ -671,14 +655,11 @@ class GameEngine {
     returnToRack(tile: any) {
         if(!this.state.rack.includes(tile)) this.state.rack.push(tile);
         this.state.placedThisTurn = this.state.placedThisTurn.filter(p=>p.tile!==tile);
-        
-        // Töröljük a tábláról, ha ott volt
         for(let r=0; r<15; r++){
             for(let c=0; c<15; c++){
                 if(this.state.boardGrid[r][c] === tile) this.state.boardGrid[r][c] = null;
             }
         }
-        
         tile.userData.isPlaced=false; 
         this.arrangeRack();
         this.triggerTempSync();
@@ -688,11 +669,9 @@ class GameEngine {
         [...this.state.placedThisTurn].forEach(p => this.returnToRack(p.tile));
     }
 
-    // SZABÁLYOS SCRABBLE VALIDÁCIÓ (Mindig Balról-Jobbra és Fentről-Lefelé olvasva!)
     async validateTurn() {
         if (this.state.placedThisTurn.length === 0) return { valid: false, error: 'Nem raktál le betűt!' };
 
-        // 1. Ellenőrizzük, hogy egyvonalban vannak-e
         const rows = this.state.placedThisTurn.map(p => p.r);
         const cols = this.state.placedThisTurn.map(p => p.c);
         const isHorizontal = rows.every(r => r === rows[0]);
@@ -700,33 +679,22 @@ class GameEngine {
 
         if (!isHorizontal && !isVertical) return { valid: false, error: 'A betűket egy vonalba kell rakni!' };
 
-        // 2. Kigyűjtjük az összes újonnan keletkezett szót.
-        // A Scrabble szabály: a fő irányban alkotott szó, PLUSZ a merőlegesen érintkező szavak.
         let wordsToCheck: { word: string, points: number }[] = [];
         let totalScore = 0;
 
-        // Segédfüggvény: megkeresi egy adott pontból kiindulva a teljes szót és kiszámolja a pontját
         const extractWord = (startR: number, startC: number, dr: number, dc: number) => {
-            // Visszalépünk a szó legelejére
             let r = startR, c = startC;
             while (r - dr >= 0 && c - dc >= 0 && r - dr < 15 && c - dc < 15 && this.state.boardGrid[r - dr][c - dc]) {
                 r -= dr; c -= dc;
             }
-            
-            // Innen olvassuk végig (Mindig balról jobbra / fentről lefelé!)
-            let word = "";
-            let wordMultiplier = 1;
-            let wordScore = 0;
-            let lettersCount = 0;
+            let word = "", wordMultiplier = 1, wordScore = 0, lettersCount = 0;
 
             while (r >= 0 && c >= 0 && r < 15 && c < 15 && this.state.boardGrid[r][c]) {
                 const tile = this.state.boardGrid[r][c];
                 const char = tile.userData.char;
                 const letterValue = LETTER_DEF[char as keyof typeof LETTER_DEF]?.value || 1;
-                
                 let letterMultiplier = 1;
                 
-                // Ha ez a betű most lett lerakva, megnézzük a szorzómezőt
                 const isNew = this.state.placedThisTurn.some(p => p.r === r && p.c === c);
                 if (isNew) {
                     const special = this.specialMap.get(`${r}_${c}`);
@@ -739,27 +707,23 @@ class GameEngine {
                 word += char;
                 wordScore += (letterValue * letterMultiplier);
                 lettersCount++;
-                
                 r += dr; c += dc;
             }
-
             return { word, points: wordScore * wordMultiplier, length: lettersCount };
         };
 
-        // FŐ SZÓ kinyerése (Abban az irányban, amerre a betűk többsége áll, vagy ha csak 1 betű, mindkét irányt megnézzük)
         const firstP = this.state.placedThisTurn[0];
         
         if (isHorizontal || this.state.placedThisTurn.length === 1) {
-            const hWord = extractWord(firstP.r, firstP.c, 0, 1); // 0, 1: Balról Jobbra
+            const hWord = extractWord(firstP.r, firstP.c, 0, 1); 
             if (hWord.length > 1) { wordsToCheck.push(hWord); totalScore += hWord.points; }
         }
         
         if (isVertical || this.state.placedThisTurn.length === 1) {
-            const vWord = extractWord(firstP.r, firstP.c, 1, 0); // 1, 0: Fentről Lefelé
+            const vWord = extractWord(firstP.r, firstP.c, 1, 0); 
             if (vWord.length > 1) { wordsToCheck.push(vWord); totalScore += vWord.points; }
         }
 
-        // MERŐLEGES SZAVAK kinyerése
         this.state.placedThisTurn.forEach(p => {
             if (isHorizontal) {
                 const v = extractWord(p.r, p.c, 1, 0);
@@ -770,7 +734,6 @@ class GameEngine {
             }
         });
 
-        // 3. API Validáció
         if (wordsToCheck.length === 0) return { valid: false, error: 'A szónak legalább 2 betűből kell állnia!' };
 
         for (const item of wordsToCheck) {
@@ -778,9 +741,7 @@ class GameEngine {
             if (!isValid) return { valid: false, error: `Nincs ilyen magyar szó: ${item.word}` };
         }
 
-        // Bónusz 7 lerakott betűért (BINGO)
         if (this.state.placedThisTurn.length === 7) totalScore += 50;
-
         return { valid: true, points: totalScore };
     }
 
@@ -841,7 +802,6 @@ class GameEngine {
             mesh.material.forEach((mat: any) => { 
                 mat.transparent = true; 
                 mat.opacity = 0.5; 
-                if(mat.color) mat.color.setHex(0xaaaaaa); 
             });
             mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
             this.scene.add(mesh);
