@@ -4,11 +4,14 @@ import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
-import { db } from '../firebase';
-import { ref, set, onValue, get, update } from 'firebase/database';
+import { createClient } from '@supabase/supabase-js';
 import gsap from 'gsap';
 
-// --- TÉMÁK ---
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_SUPABASE_ANON_KEY
+);
+
 const THEMES = {
   luxus: {
     name: "Royal Mahogany",
@@ -65,9 +68,8 @@ export default function WordMasterGame() {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<any>(null);
   const roomIdRef = useRef<string>('');
-  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const subscriptionsRef = useRef<any[]>([]);
 
-  // --- ÁLLAPOTOK ---
   const [gameState, setGameState] = useState('menu');
   const [scores, setScores] = useState<number[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
@@ -97,8 +99,6 @@ export default function WordMasterGame() {
     return () => { document.head.removeChild(meta); };
   }, []);
 
-  useEffect(() => { roomIdRef.current = roomId; }, [roomId]);
-
   const showToast = (msg: string, isError: boolean) => {
     setToastMsg({ text: msg, type: isError ? 'error' : 'success' });
     setTimeout(() => setToastMsg({ text: '', type: '' }), 3000);
@@ -111,142 +111,237 @@ export default function WordMasterGame() {
     }
   }, [currentPlayer, playerName, config.playerNames]);
 
-  // --- OPTIMALIZÁLT SZINKRONIZÁTOR - AZONNAL FRISSÍT ---
   useEffect(() => {
     if (gameState !== 'playing' || !gameRef.current) return;
-
-    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-
-    syncTimeoutRef.current = setTimeout(() => {
-      if (gameRef.current && globalBoardData.length > 0) {
-        gameRef.current.syncBoardFromFirebase(globalBoardData);
-      }
-    }, 50); // Gyors szinkronizáció
-
-    return () => {
-      if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
-    };
+    gameRef.current.syncBoardFromFirebase(globalBoardData);
   }, [globalBoardData, gameState]);
 
-  // --- SZELLEM BETŰK SZINKRONIZÁLÁSA (FOLYAMATOS) ---
   useEffect(() => {
     if (gameRef.current && gameState === 'playing') {
       gameRef.current.syncOpponentPlacements(globalTempData);
     }
   }, [globalTempData, gameState]);
 
-  // --- MULTIPLAYER LOGIKA ---
   const createRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
 
-    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const roomRef = ref(db, `rooms/${newRoomId}`);
+    const newRoomCode = Math.random().toString(36).substring(2, 6).toUpperCase();
 
-    await set(roomRef, {
-      status: 'lobby',
-      config: { ...config, playerNames: [playerName] },
-      players: [{ name: playerName, score: 0 }],
-      currentTurn: 0,
-      hostName: playerName,
-      boardData: JSON.stringify([]),
-      tempPlacements: JSON.stringify([]),
-      lastUpdate: Date.now()
-    });
+    const { data: room, error: roomError } = await supabase
+      .from('game_rooms')
+      .insert([{
+        room_code: newRoomCode,
+        status: 'lobby',
+        host_id: playerName,
+        config: { theme: config.theme, boardType: config.boardType }
+      }])
+      .select('id')
+      .single();
 
-    setRoomId(newRoomId);
+    if (roomError) return showToast('Hiba a szoba létrehozásakor!', true);
+
+    const { error: playerError } = await supabase
+      .from('room_players')
+      .insert([{
+        room_id: room.id,
+        player_name: playerName,
+        join_order: 0
+      }]);
+
+    if (playerError) return showToast('Hiba a játékos hozzáadásakor!', true);
+
+    const { error: turnError } = await supabase
+      .from('current_turn')
+      .insert([{
+        room_id: room.id,
+        current_player_index: 0,
+        turn_count: 0
+      }]);
+
+    if (turnError) return showToast('Hiba a fordulószámláló létrehozásakor!', true);
+
+    setRoomId(room.id);
     setIsHost(true);
-    listenToRoom(newRoomId);
+    roomIdRef.current = room.id;
+    listenToRoom(room.id);
   };
 
   const joinRoom = async () => {
     if (!playerName.trim()) return showToast('Kérlek add meg a neved!', true);
     if (roomCodeInput.length !== 4) return showToast('A kód 4 karakter hosszú!', true);
 
-    const roomRef = ref(db, `rooms/${roomCodeInput}`);
-    const snapshot = await get(roomRef);
+    const { data: room, error: roomError } = await supabase
+      .from('game_rooms')
+      .select('id, status, config')
+      .eq('room_code', roomCodeInput)
+      .single();
 
-    if (snapshot.exists()) {
-      const roomData = snapshot.val();
-      if (roomData.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
+    if (roomError || !room) return showToast('Nem létezik ilyen szoba!', true);
+    if (room.status !== 'lobby') return showToast('A játék már elkezdődött!', true);
 
-      const currentPlayers = roomData.players || [];
-      if (currentPlayers.length >= 4) return showToast('A szoba megtelt!', true);
+    const { data: players, error: playersError } = await supabase
+      .from('room_players')
+      .select('*')
+      .eq('room_id', room.id);
 
-      const updatedPlayers = [...currentPlayers, { name: playerName, score: 0 }];
-      await update(roomRef, {
-        players: updatedPlayers,
-        lastUpdate: Date.now()
-      });
+    if (players && players.length >= 4) return showToast('A szoba megtelt!', true);
 
-      setRoomId(roomCodeInput);
-      listenToRoom(roomCodeInput);
-    } else {
-      showToast('Nem létezik ilyen szoba!', true);
+    const { error: insertError } = await supabase
+      .from('room_players')
+      .insert([{
+        room_id: room.id,
+        player_name: playerName,
+        join_order: players?.length || 0
+      }]);
+
+    if (insertError) return showToast('Hiba a csatlakozásnál!', true);
+
+    setRoomId(room.id);
+    setConfig(prev => ({ ...prev, ...room.config }));
+    roomIdRef.current = room.id;
+    listenToRoom(room.id);
+  };
+
+  const listenToRoom = (roomId: string) => {
+    subscriptionsRef.current.forEach(sub => sub.unsubscribe());
+    subscriptionsRef.current = [];
+
+    // Valós idejű játékosok
+    const playersSub = supabase
+      .from('room_players')
+      .on('*', (payload) => {
+        loadRoomData(roomId);
+      })
+      .subscribe();
+
+    // Valós idejű tábla
+    const boardSub = supabase
+      .from('board_state')
+      .on('*', (payload) => {
+        loadBoardState(roomId);
+      })
+      .subscribe();
+
+    // Valós idejű szellem betűk
+    const tempSub = supabase
+      .from('temp_placements')
+      .on('*', (payload) => {
+        loadTempPlacements(roomId);
+      })
+      .subscribe();
+
+    // Valós idejű fordulóváltás
+    const turnSub = supabase
+      .from('current_turn')
+      .on('*', (payload) => {
+        loadTurnData(roomId);
+      })
+      .subscribe();
+
+    subscriptionsRef.current = [playersSub, boardSub, tempSub, turnSub];
+
+    loadRoomData(roomId);
+    loadBoardState(roomId);
+    loadTempPlacements(roomId);
+    loadTurnData(roomId);
+  };
+
+  const loadRoomData = async (roomId: string) => {
+    const { data: room } = await supabase
+      .from('game_rooms')
+      .select('status, config')
+      .eq('id', roomId)
+      .single();
+
+    const { data: players } = await supabase
+      .from('room_players')
+      .select('player_name, score')
+      .eq('room_id', roomId)
+      .order('join_order');
+
+    if (room && players) {
+      setConfig(prev => ({ ...prev, ...room.config, playerNames: players.map(p => p.player_name) }));
+      setScores(players.map(p => p.score || 0));
+
+      if (room.status === 'playing' && gameState !== 'playing') {
+        setGameState('playing');
+        setTimeout(() => {
+          if(gameRef.current) {
+            gameRef.current.updateConfig({ ...room.config, playerNames: players.map(p => p.player_name) });
+            gameRef.current.transitionToGameView();
+          }
+        }, 100);
+      }
     }
   };
 
-  const listenToRoom = (id: string) => {
-    const roomRef = ref(db, `rooms/${id}`);
-    onValue(roomRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const playersData = data.players || [];
-        const names = playersData.map((p: any) => p.name);
-        const syncedScores = playersData.map((p: any) => p.score || 0);
+  const loadBoardState = async (roomId: string) => {
+    const { data: tiles } = await supabase
+      .from('board_state')
+      .select('row, col, character')
+      .eq('room_id', roomId);
 
-        setConfig(prev => ({ ...prev, ...data.config, playerNames: names }));
-        setScores(syncedScores);
-        setCurrentPlayer(data.currentTurn || 0);
+    if (tiles) {
+      setGlobalBoardData(tiles.map(t => ({ r: t.row, c: t.col, char: t.character })));
+    }
+  };
 
-        // Tábla adatok szinkronizálása
-        if (data.boardData) {
-            const parsedBoard = typeof data.boardData === 'string' ? JSON.parse(data.boardData) : data.boardData;
-            setGlobalBoardData(parsedBoard || []);
-        }
+  const loadTempPlacements = async (roomId: string) => {
+    const { data: temps } = await supabase
+      .from('temp_placements')
+      .select('row, col, character, player_name')
+      .eq('room_id', roomId);
 
-        // Szellem betűk szinkronizálása (ellenfél lépése)
-        if (data.tempPlacements) {
-            const parsedTemp = typeof data.tempPlacements === 'string' ? JSON.parse(data.tempPlacements) : data.tempPlacements;
-            setGlobalTempData(parsedTemp || []);
-        }
+    if (temps) {
+      const filtered = temps.filter(t => t.player_name !== playerName);
+      setGlobalTempData(filtered.map(t => ({ r: t.row, c: t.col, char: t.character })));
+    }
+  };
 
-        if (data.status === 'playing' && gameState !== 'playing') {
-            setGameState('playing');
-            setTimeout(() => {
-                if(gameRef.current) {
-                    gameRef.current.updateConfig({ ...data.config, playerNames: names });
-                    gameRef.current.transitionToGameView();
-                }
-            }, 100);
-        }
-      }
-    });
+  const loadTurnData = async (roomId: string) => {
+    const { data: turn } = await supabase
+      .from('current_turn')
+      .select('current_player_index')
+      .eq('room_id', roomId)
+      .single();
+
+    if (turn) {
+      setCurrentPlayer(turn.current_player_index);
+    }
   };
 
   const startMultiplayerGame = async () => {
     if (!roomId) return;
-    await update(ref(db, `rooms/${roomId}`), {
-      status: 'playing',
-      lastUpdate: Date.now()
-    });
-  };
-
-  const backToMenu = () => {
-    setGameState('menu');
-    setRoomId('');
-    if(gameRef.current) gameRef.current.transitionToMenuView();
+    await supabase
+      .from('game_rooms')
+      .update({ status: 'playing' })
+      .eq('id', roomId);
   };
 
   const onTempPlaceSync = (placements: any[]) => {
-    if (roomIdRef.current) {
-      update(ref(db, `rooms/${roomIdRef.current}`), {
-        tempPlacements: JSON.stringify(placements),
-        lastUpdate: Date.now()
-      }).catch(err => console.error('Sync error:', err));
+    if (!roomIdRef.current) return;
+
+    supabase
+      .from('temp_placements')
+      .delete()
+      .eq('room_id', roomIdRef.current)
+      .eq('player_name', playerName);
+
+    if (placements.length > 0) {
+      supabase
+        .from('temp_placements')
+        .insert(
+          placements.map(p => ({
+            room_id: roomIdRef.current,
+            player_name: playerName,
+            row: p.r,
+            col: p.c,
+            character: p.char
+          }))
+        );
     }
   };
 
-  // --- 3D GAME ENGINE ---
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -258,7 +353,6 @@ export default function WordMasterGame() {
       currentBoardType: string = 'normal';
       specialMap = new Map();
       opponentTempTiles: any[] = [];
-      opponentTempMap = new Map();
       onTempPlaceCallback: (placements: any[]) => void;
 
       state = {
@@ -402,7 +496,6 @@ export default function WordMasterGame() {
 
       getTexture(lines: string[], color: string | null, isTile: boolean) {
         const id = isTile ? lines[0] : lines.join('_') + color + this.activeTheme.name;
-
         if (this.textureCache[id]) return this.textureCache[id];
 
         const size = 256;
@@ -432,7 +525,6 @@ export default function WordMasterGame() {
         const texture = new THREE.CanvasTexture(cvs);
         texture.needsUpdate = true;
         this.textureCache[id] = texture;
-
         return texture;
       }
 
@@ -675,7 +767,6 @@ export default function WordMasterGame() {
         return this.state.logicalBoard;
       }
 
-      // --- GYORS TÁBLA FRISSÍTÉS REAL-TIME ---
       syncBoardFromFirebase(boardData: any[]) {
         if (!boardData || boardData.length === 0) return;
 
@@ -710,7 +801,6 @@ export default function WordMasterGame() {
         }
       }
 
-      // --- SZELLEM BETŰK - ELLENFÉL ÉLŐBEN LÁTHATÓ MOZGÁSA ---
       syncOpponentPlacements(placements: any[]) {
         const newTempMap = new Map();
         placements.forEach(p => newTempMap.set(`${p.r}_${p.c}`, p.char));
@@ -727,22 +817,18 @@ export default function WordMasterGame() {
         placements.forEach(p => {
             const alreadyPlaced = this.state.logicalBoard.some(lb => lb.r === p.r && lb.c === p.c);
             if (!alreadyPlaced) {
-                const existingGhost = this.opponentTempTiles.find(t => t.userData.r === p.r && t.userData.c === p.c);
-
-                if (!existingGhost) {
-                    const mesh = this.createTileMesh(p.char);
-                    mesh.userData.r = p.r;
-                    mesh.userData.c = p.c;
-                    mesh.material.forEach((mat: any) => {
-                        mat.transparent = true;
-                        mat.opacity = 0.6;
-                        if(mat.color) mat.color.setHex(0xdddddd);
-                    });
-                    mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
-                    mesh.rotation.set(0, 0, 0);
-                    this.scene.add(mesh);
-                    this.opponentTempTiles.push(mesh);
-                }
+                const mesh = this.createTileMesh(p.char);
+                mesh.userData.r = p.r;
+                mesh.userData.c = p.c;
+                mesh.material.forEach((mat: any) => {
+                    mat.transparent = true;
+                    mat.opacity = 0.6;
+                    if(mat.color) mat.color.setHex(0xcccccc);
+                });
+                mesh.position.set((p.c - 7) * 1.05, 0.25, (p.r - 7) * 1.05);
+                mesh.rotation.set(0, 0, 0);
+                this.scene.add(mesh);
+                this.opponentTempTiles.push(mesh);
             }
         });
       }
@@ -780,7 +866,6 @@ export default function WordMasterGame() {
     };
   }, []);
 
-  // --- LERAKÁS ÉS API ---
   const handleValidate = async () => {
     if(!gameRef.current || validating) return;
     setValidating(true);
@@ -822,19 +907,38 @@ export default function WordMasterGame() {
     const boardSnapshot = gameRef.current.getBoardSnapshot();
 
     const nextTurn = (currentPlayer + 1) % config.playerNames.length;
-    const newPlayers = config.playerNames.map((n, i) => ({
-        name: n,
-        score: i === currentPlayer ? (scores[i] || 0) + pts : (scores[i] || 0)
-    }));
 
     try {
-        await update(ref(db, `rooms/${roomId}`), {
-            currentTurn: nextTurn,
-            players: newPlayers,
-            boardData: JSON.stringify(boardSnapshot),
-            tempPlacements: JSON.stringify([]),
-            lastUpdate: Date.now()
+        placed.forEach(async (p) => {
+            await supabase
+              .from('board_state')
+              .insert([{
+                room_id: roomId,
+                row: p.r,
+                col: p.c,
+                character: p.tile.userData.char,
+                player_name: playerName
+              }]);
         });
+
+        await supabase
+          .from('temp_placements')
+          .delete()
+          .eq('room_id', roomId);
+
+        await supabase
+          .from('current_turn')
+          .update({ current_player_index: nextTurn })
+          .eq('room_id', roomId);
+
+        const newScores = [...scores];
+        newScores[currentPlayer] = (newScores[currentPlayer] || 0) + pts;
+
+        await supabase
+          .from('room_players')
+          .update({ score: newScores[currentPlayer] })
+          .eq('player_name', playerName);
+
         showToast(`Kész! +${pts}`, false);
     } catch(err) {
         showToast('Hálózati hiba!', true);
@@ -947,16 +1051,16 @@ export default function WordMasterGame() {
                       <>
                         <div style={{textAlign:'center', marginBottom:'15px'}}>
                           <p style={{opacity:0.7, margin:0}}>Szoba kódja:</p>
-                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId}</h2>
+                          <h2 style={{fontSize:'36px', color:'#facc15', letterSpacing:'5px', margin:'5px 0'}}>{roomId.slice(0, 4).toUpperCase()}</h2>
                         </div>
 
                         {isHost && (
                           <div className="input-group">
                               <label className="input-label">Téma (Host beállítás)</label>
                               <div className="option-grid-3">
-                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'luxus'})}>Luxus</button>
-                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'nordic'})}>Nordic</button>
-                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={()=>update(ref(db, `rooms/${roomId}/config`), {theme: 'cyber'})}>Cyber</button>
+                                  <button className={`modern-btn ${config.theme==='luxus'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'luxus', boardType:config.boardType}}).eq('id', roomId)}>Luxus</button>
+                                  <button className={`modern-btn ${config.theme==='nordic'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'nordic', boardType:config.boardType}}).eq('id', roomId)}>Nordic</button>
+                                  <button className={`modern-btn ${config.theme==='cyber'?'active':''}`} onClick={async () => await supabase.from('game_rooms').update({config: {theme:'cyber', boardType:config.boardType}}).eq('id', roomId)}>Cyber</button>
                               </div>
                           </div>
                         )}
